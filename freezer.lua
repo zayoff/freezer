@@ -16475,9 +16475,9 @@ local function createScrollFrame(parent)
     return sf
 end
 
---==[============================================================
+--[[============================================================
     STATE FINDER CORE
-==============================================================--]]
+==============================================================]]
 
 -- Forward declarations so callbacks can reference functions defined later.
 local runAudit, probeAllTrust, exportFindings, startMonitor, stopMonitor,
