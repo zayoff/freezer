@@ -19072,20 +19072,20 @@ function Controls.Slider(parent, label, min, max, default, decimals, callback, s
     local row = newRow(parent, label, sub)
     local value = default
 
-    local track = new("Frame", {
+    local barTrack = new("Frame", {
         Size = UDim2.fromOffset(180, 4),
         Position = UDim2.new(1, -240, 0.5, -2),
         BackgroundColor3 = Theme.CardBg,
         BorderSizePixel = 0,
         Parent = row,
     })
-    corner(track, 2)
+    corner(barTrack, 2)
 
     local fill = new("Frame", {
         Size = UDim2.new((value-min)/(max-min), 0, 1, 0),
         BackgroundColor3 = Theme.AccentPrimary,
         BorderSizePixel = 0,
-        Parent = track,
+        Parent = barTrack,
     })
     corner(fill, 2)
 
@@ -19094,7 +19094,7 @@ function Controls.Slider(parent, label, min, max, default, decimals, callback, s
         Position = UDim2.new((value-min)/(max-min), -7, 0.5, -7),
         BackgroundColor3 = Color3.fromRGB(255,255,255),
         BorderSizePixel = 0,
-        Parent = track,
+        Parent = barTrack,
     })
     corner(knob, 7)
 
@@ -19126,19 +19126,19 @@ function Controls.Slider(parent, label, min, max, default, decimals, callback, s
         if fire and callback then pcall(callback, tonumber(format(value))) end
     end
 
-    track.InputBegan:Connect(function(input)
+    track(barTrack.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true
         end
-    end)
-    track.InputEnded:Connect(function(input)
+    end))
+    track(barTrack.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = false
         end
-    end)
+    end))
     track(UserInputService.InputChanged:Connect(function(input)
         if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local rel = (input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X
+            local rel = (input.Position.X - barTrack.AbsolutePosition.X) / barTrack.AbsoluteSize.X
             set(min + math.clamp(rel, 0, 1) * (max - min), true)
         end
     end))
