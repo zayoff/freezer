@@ -21433,7 +21433,7 @@ getgenv().FREEZER = getgenv().ENI
 -- ---------------------------------------------------------------------------
 -- Master cleanup: tears down every embedded module + the Hub.
 -- ---------------------------------------------------------------------------
-function getgenv().ENI.DestroyAll()
+getgenv().ENI.DestroyAll = function()
     local order = { "Desync", "MagicBullet", "SilentAim", "PermsSpoofer", "LiveState",
                     "RemoteSpy", "RemoteScanner", "GuiDumper", "StateFinder", "ConnectionDumper" }
     for _, name in ipairs(order) do
