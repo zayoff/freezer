@@ -7,13 +7,23 @@
 
 --[[ ANTI-DETECT / EXPLOIT FUNCTION RESOLUTION ]]
 local function safeGet(name)
-    local ok, val = pcall(function() return getfenv(0)[name] end)
+    -- Try getgenv() first (modern executors expose globals there)
+    local ok, val = pcall(function() return getgenv and getgenv()[name] end)
+    if ok and val then return val end
+    -- Try getfenv(0) (classic global env)
+    ok, val = pcall(function() return getfenv(0)[name] end)
+    if ok and val then return val end
+    -- Try _G (some executors stash here)
+    ok, val = pcall(function() return _G[name] end)
     if ok and val then return val end
     return nil
 end
 
+local _gethui        = safeGet("gethui")
 local cloneref       = safeGet("cloneref")       or function(o) return o end
-local protect_gui    = safeGet("protect_gui")    or safeGet("syn_protect_gui") or function(g) return g end
+local protect_gui    = safeGet("protect_gui")    or safeGet("syn_protect_gui")
+    or (_gethui and function(g) g.Parent = _gethui(); return g end)
+    or function(g) return g end
 local hookmetamethod = safeGet("hookmetamethod") or function() return nil end
 local newcclosure    = safeGet("newcclosure")    or function(f) return f end
 local checkcaller    = safeGet("checkcaller")    or function() return false end
@@ -315,11 +325,19 @@ local function makeScreenGui(name, displayOrder)
         Name = name, IgnoreGuiInset = true, ResetOnSpawn = false,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = displayOrder or 1000,
     })
-    pcall(function()
-        gui = protect_gui(gui) or gui
-        gui.Parent = CoreGui
-    end)
-    if not gui.Parent then gui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+    -- Try gethui() first (Solara, Krnl modern)
+    if _gethui then
+        local ok = pcall(function() gui.Parent = _gethui() end)
+        if ok and gui.Parent then return gui end
+    end
+    -- Try syn.protect_gui pattern
+    pcall(function() protect_gui(gui) end)
+    if gui.Parent then return gui end
+    -- Try CoreGui directly (Synapse classic, Script-Ware)
+    pcall(function() gui.Parent = CoreGui end)
+    if gui.Parent then return gui end
+    -- Final fallback: PlayerGui (always works, less stealthy but visible)
+    pcall(function() gui.Parent = LocalPlayer:WaitForChild("PlayerGui", 5) end)
     return gui
 end
 
