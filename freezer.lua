@@ -1,4 +1,4 @@
---[[
+﻿--[[
     FREEZER v6.0.0  ::  Extended build
     Single-file Roblox executor menu, by ENI for LO
 
@@ -84,7 +84,7 @@ local C = {
 local EASE      = TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 local EASE_FAST = TweenInfo.new(0.12, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 
---[[ STATE — all features OFF by default ]]
+--[[ STATE â€” all features OFF by default ]]
 local S = {
     Master = { Enabled = false, ToggleKey = "RightControl" },
     Aimbot = {
@@ -287,6 +287,7 @@ end
 
 --[[ CONNECTION TRACKER ]]
 local _connections = {}
+local Engines = {}
 local function track(c) table.insert(_connections, c); return c end
 local function clearConnections()
     for _, c in ipairs(_connections) do pcall(function() c:Disconnect() end) end
@@ -394,7 +395,7 @@ local function notify(title, body, accent, duration)
     end)
 end
 
---[[ SPLASH — minimal 2s fade, can never block ]]
+--[[ SPLASH â€” minimal 2s fade, can never block ]]
 local function showSplash(onDone)
     local ok = pcall(function()
         local splash = makeScreenGui("FREEZER_Splash", 999999)
@@ -1370,12 +1371,12 @@ local function updateFovCircle()
         Visible = (S.Aimbot.Enabled or S.SilentAim.Enabled) and S.Aimbot.ShowFovCircle,
     })
 end
-local function startFovCircle()
+Engines.startFovCircle = function()
     if fovCircle then return end
     fovCircle = drawCircle(1, 120, C.Accent, false, 1)
     fovCircleConn = RunService.RenderStepped:Connect(updateFovCircle)
 end
-local function stopFovCircle()
+Engines.stopFovCircle = function()
     if fovCircleConn then fovCircleConn:Disconnect(); fovCircleConn = nil end
     if fovCircle then fovCircle:Remove(); fovCircle = nil end
 end
@@ -1395,7 +1396,7 @@ end
 local aimbotConn = nil
 local stickyTarget = nil
 local lastLockedTarget = nil
-local function startAimbot()
+Engines.startAimbot = function()
     if aimbotConn then return end
     aimbotConn = RunService.RenderStepped:Connect(function()
         if not S.Master.Enabled or not S.Aimbot.Enabled then
@@ -1461,7 +1462,7 @@ local function startAimbot()
         end
     end)
 end
-local function stopAimbot()
+Engines.stopAimbot = function()
     if aimbotConn then aimbotConn:Disconnect(); aimbotConn = nil end
     if lockLine then lockLine:SetVisible(false) end
     clearLockHighlight()
@@ -1470,7 +1471,7 @@ end
 
 -- Trigger Bot
 local triggerConn = nil
-local function startTriggerBot()
+Engines.startTriggerBot = function()
     if triggerConn then return end
     triggerConn = RunService.Heartbeat:Connect(function()
         if not S.Master.Enabled or not S.TriggerBot.Enabled then return end
@@ -1496,7 +1497,7 @@ local function startTriggerBot()
         end)
     end)
 end
-local function stopTriggerBot()
+Engines.stopTriggerBot = function()
     if triggerConn then triggerConn:Disconnect(); triggerConn = nil end
 end
 
@@ -1778,7 +1779,7 @@ local R15_BONES = {
     { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
 }
 
-local function startESP()
+Engines.startESP = function()
     if espConn then return end
     espConn = RunService.Heartbeat:Connect(function()
         local cam = GetCamera()
@@ -1942,7 +1943,7 @@ local function startESP()
         end
     end)
 end
-local function stopESP()
+Engines.stopESP = function()
     if espConn then espConn:Disconnect(); espConn = nil end
     for plr in pairs(espItems) do clearOneESP(plr) end
 end
@@ -1952,7 +1953,7 @@ track(Players.PlayerRemoving:Connect(clearOneESP))
 local itemHighlights = {}
 local npcHighlights = {}
 local itemEspConn = nil
-local function startItemEsp()
+Engines.startItemEsp = function()
     if itemEspConn then return end
     itemEspConn = RunService.Heartbeat:Connect(function()
         -- Clear stale
@@ -2006,7 +2007,7 @@ local function startItemEsp()
         end
     end)
 end
-local function stopItemEsp()
+Engines.stopItemEsp = function()
     if itemEspConn then itemEspConn:Disconnect(); itemEspConn = nil end
     for inst, h in pairs(itemHighlights) do pcall(function() h:Destroy() end) end
     for inst, h in pairs(npcHighlights) do pcall(function() h:Destroy() end) end
@@ -2031,7 +2032,7 @@ end))
 
 -- Fly
 local flyBV, flyBG, flyConn
-local function startFly()
+Engines.startFly = function()
     if flyBV then return end
     local hrp = getHRP(LP)
     if not hrp then notify("Fly", "No HumanoidRootPart", C.Danger); S.Movement.Fly = false; return end
@@ -2058,7 +2059,7 @@ local function startFly()
         flyBG.CFrame = cam.CFrame
     end)
 end
-local function stopFly()
+Engines.stopFly = function()
     if flyConn then flyConn:Disconnect(); flyConn = nil end
     if flyBV then flyBV:Destroy(); flyBV = nil end
     if flyBG then flyBG:Destroy(); flyBG = nil end
@@ -2066,7 +2067,7 @@ end
 
 -- Noclip
 local noclipConn
-local function startNoclip()
+Engines.startNoclip = function()
     if noclipConn then return end
     noclipConn = RunService.Stepped:Connect(function()
         if not S.Movement.Noclip then return end
@@ -2077,13 +2078,13 @@ local function startNoclip()
         end
     end)
 end
-local function stopNoclip()
+Engines.stopNoclip = function()
     if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
 end
 
 -- Inf Jump
 local infJumpConn
-local function startInfJump()
+Engines.startInfJump = function()
     if infJumpConn then return end
     infJumpConn = UserInputService.JumpRequest:Connect(function()
         if not S.Movement.InfJump then return end
@@ -2091,13 +2092,13 @@ local function startInfJump()
         if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
     end)
 end
-local function stopInfJump()
+Engines.stopInfJump = function()
     if infJumpConn then infJumpConn:Disconnect(); infJumpConn = nil end
 end
 
 -- Spinbot
 local spinConn
-local function startSpinbot()
+Engines.startSpinbot = function()
     if spinConn then return end
     local angle = 0
     spinConn = RunService.Heartbeat:Connect(function(dt)
@@ -2110,13 +2111,13 @@ local function startSpinbot()
         end)
     end)
 end
-local function stopSpinbot()
+Engines.stopSpinbot = function()
     if spinConn then spinConn:Disconnect(); spinConn = nil end
 end
 
 -- Moon jump
 local moonJumpConn
-local function startMoonJump()
+Engines.startMoonJump = function()
     if moonJumpConn then return end
     moonJumpConn = RunService.Heartbeat:Connect(function()
         if not S.Movement.MoonJump then return end
@@ -2126,14 +2127,14 @@ local function startMoonJump()
         end
     end)
 end
-local function stopMoonJump()
+Engines.stopMoonJump = function()
     if moonJumpConn then moonJumpConn:Disconnect(); moonJumpConn = nil end
     pcall(function() Workspace.Gravity = S.Movement.Gravity end)
 end
 
 -- Wall climb
 local wallClimbConn
-local function startWallClimb()
+Engines.startWallClimb = function()
     if wallClimbConn then return end
     wallClimbConn = RunService.Heartbeat:Connect(function()
         if not S.Movement.WallClimb then return end
@@ -2150,13 +2151,13 @@ local function startWallClimb()
         end
     end)
 end
-local function stopWallClimb()
+Engines.stopWallClimb = function()
     if wallClimbConn then wallClimbConn:Disconnect(); wallClimbConn = nil end
 end
 
 -- Anti-fling / Anti-void
 local antiFlingConn
-local function startAntiFling()
+Engines.startAntiFling = function()
     if antiFlingConn then return end
     antiFlingConn = RunService.Heartbeat:Connect(function()
         if not S.Movement.AntiFling then return end
@@ -2168,13 +2169,13 @@ local function startAntiFling()
         end
     end)
 end
-local function stopAntiFling()
+Engines.stopAntiFling = function()
     if antiFlingConn then antiFlingConn:Disconnect(); antiFlingConn = nil end
 end
 
 local antiVoidConn
 local lastSafePos = nil
-local function startAntiVoid()
+Engines.startAntiVoid = function()
     if antiVoidConn then return end
     antiVoidConn = RunService.Heartbeat:Connect(function()
         if not S.Movement.AntiVoid then return end
@@ -2187,7 +2188,7 @@ local function startAntiVoid()
         end
     end)
 end
-local function stopAntiVoid()
+Engines.stopAntiVoid = function()
     if antiVoidConn then antiVoidConn:Disconnect(); antiVoidConn = nil end
 end
 
@@ -2258,7 +2259,7 @@ local function shouldDesyncEngage()
     return false
 end
 
-local function startDesync()
+Engines.startDesync = function()
     if desyncConn then return end
     desyncConn = RunService.Heartbeat:Connect(function()
         local engage = shouldDesyncEngage()
@@ -2291,7 +2292,7 @@ local function startDesync()
         end
     end)
 end
-local function stopDesync()
+Engines.stopDesync = function()
     if desyncConn then desyncConn:Disconnect(); desyncConn = nil end
     destroyFakeChar()
 end
@@ -2345,7 +2346,7 @@ end
 
 -- Anti-AFK
 local afkConn
-local function startAntiAFK()
+Engines.startAntiAFK = function()
     if afkConn then return end
     afkConn = LP.Idled:Connect(function()
         if not S.Misc.AntiAFK then return end
@@ -2356,13 +2357,13 @@ local function startAntiAFK()
         end)
     end)
 end
-local function stopAntiAFK()
+Engines.stopAntiAFK = function()
     if afkConn then afkConn:Disconnect(); afkConn = nil end
 end
 
 -- Fullbright
 local origLight = {}
-local function startFullbright()
+Engines.startFullbright = function()
     if origLight.set then return end
     origLight.Brightness = Lighting.Brightness
     origLight.ClockTime = Lighting.ClockTime
@@ -2376,7 +2377,7 @@ local function startFullbright()
     pcall(function() Lighting.OutdoorAmbient = Color3.new(1, 1, 1) end)
     pcall(function() Lighting.GlobalShadows = false end)
 end
-local function stopFullbright()
+Engines.stopFullbright = function()
     if not origLight.set then return end
     pcall(function() Lighting.Brightness = origLight.Brightness end)
     pcall(function() Lighting.ClockTime = origLight.ClockTime end)
@@ -2388,7 +2389,7 @@ end
 
 -- No fog
 local origFog = {}
-local function startNoFog()
+Engines.startNoFog = function()
     if origFog.set then return end
     origFog.FogEnd = Lighting.FogEnd
     origFog.FogStart = Lighting.FogStart
@@ -2396,7 +2397,7 @@ local function startNoFog()
     pcall(function() Lighting.FogEnd = 100000 end)
     pcall(function() Lighting.FogStart = 100000 end)
 end
-local function stopNoFog()
+Engines.stopNoFog = function()
     if not origFog.set then return end
     pcall(function() Lighting.FogEnd = origFog.FogEnd end)
     pcall(function() Lighting.FogStart = origFog.FogStart end)
@@ -2406,7 +2407,7 @@ end
 -- Crosshair
 local crosshairObjs = nil
 local crosshairConn = nil
-local function startCrosshair()
+Engines.startCrosshair = function()
     if crosshairObjs then return end
     crosshairObjs = {
         h = drawLine(1, S.Misc.CrosshairColor, 1),
@@ -2425,7 +2426,7 @@ local function startCrosshair()
         crosshairObjs.v:Set({ From = Vector2.new(cx, cy - sz), To = Vector2.new(cx, cy + sz), Color = S.Misc.CrosshairColor, Visible = true })
     end)
 end
-local function stopCrosshair()
+Engines.stopCrosshair = function()
     if crosshairConn then crosshairConn:Disconnect(); crosshairConn = nil end
     if crosshairObjs then
         crosshairObjs.h:Remove(); crosshairObjs.v:Remove(); crosshairObjs = nil
@@ -2460,7 +2461,7 @@ local function pushChat(speaker, text, channel)
 end
 
 local chatSpyConns = {}
-local function startChatSpy()
+Engines.startChatSpy = function()
     if #chatSpyConns > 0 then return end
     for _, plr in ipairs(Players:GetPlayers()) do
         table.insert(chatSpyConns, plr.Chatted:Connect(function(msg)
@@ -2482,7 +2483,7 @@ local function startChatSpy()
         end)
     end
 end
-local function stopChatSpy()
+Engines.stopChatSpy = function()
     for _, c in ipairs(chatSpyConns) do pcall(function() c:Disconnect() end) end
     chatSpyConns = {}
 end
@@ -2549,7 +2550,7 @@ do
     local c2 = Controls.Card(p, "Quick toggles", "Top 5.")
     Controls.Toggle(c2, "Aimbot", S.Aimbot.Enabled, function(v)
         S.Aimbot.Enabled = v
-        if v then startAimbot() else stopAimbot() end
+        if v then Engines.startAimbot() else Engines.stopAimbot() end
     end)
     Controls.Toggle(c2, "Silent Aim", S.SilentAim.Enabled, function(v)
         if v then if not installNamecallHook() then return end end
@@ -2557,15 +2558,15 @@ do
     end)
     Controls.Toggle(c2, "ESP Master", S.ESP.Master, function(v)
         S.ESP.Master = v
-        if v then startESP() else stopESP() end
+        if v then Engines.startESP() else Engines.stopESP() end
     end)
     Controls.Toggle(c2, "Fly", S.Movement.Fly, function(v)
         S.Movement.Fly = v
-        if v then startFly() else stopFly() end
+        if v then Engines.startFly() else Engines.stopFly() end
     end)
     Controls.Toggle(c2, "Noclip", S.Movement.Noclip, function(v)
         S.Movement.Noclip = v
-        if v then startNoclip() else stopNoclip() end
+        if v then Engines.startNoclip() else Engines.stopNoclip() end
     end)
 
     local c3 = Controls.Card(p, "Session", "Live status.")
@@ -2595,7 +2596,7 @@ do
     local cA = Controls.Card(p, "Aimbot", "Camera-snap aimbot. Hold activation key.")
     Controls.Toggle(cA, "Enabled", S.Aimbot.Enabled, function(v)
         S.Aimbot.Enabled = v
-        if v then startAimbot(); startFovCircle() else stopAimbot() end
+        if v then Engines.startAimbot(); Engines.startFovCircle() else Engines.stopAimbot() end
     end)
     Controls.Keybind(cA, "Activation key", S.Aimbot.ActivationKey, function(k) S.Aimbot.ActivationKey = k end)
     registerKey("Aimbot activation", function() return S.Aimbot.ActivationKey end, function(k) S.Aimbot.ActivationKey = k end)
@@ -2616,7 +2617,7 @@ do
     Controls.Section(cA, "FOV circle")
     Controls.Toggle(cA, "Show FOV circle", S.Aimbot.ShowFovCircle, function(v)
         S.Aimbot.ShowFovCircle = v
-        if v then startFovCircle() end
+        if v then Engines.startFovCircle() end
     end)
     Controls.ColorPicker(cA, "Circle color", S.Aimbot.ColorFovCircle, function(v) S.Aimbot.ColorFovCircle = v end)
     Controls.Toggle(cA, "Filled", S.Aimbot.FilledFovCircle, function(v) S.Aimbot.FilledFovCircle = v end)
@@ -2625,7 +2626,7 @@ do
     local cTB = Controls.Card(p, "Trigger Bot", "Hold key, auto-fire when crosshair over enemy.")
     Controls.Toggle(cTB, "Enabled", S.TriggerBot.Enabled, function(v)
         S.TriggerBot.Enabled = v
-        if v then startTriggerBot() else stopTriggerBot() end
+        if v then Engines.startTriggerBot() else Engines.stopTriggerBot() end
     end)
     Controls.Keybind(cTB, "Activation key", S.TriggerBot.Key, function(k) S.TriggerBot.Key = k end)
     registerKey("Trigger bot", function() return S.TriggerBot.Key end, function(k) S.TriggerBot.Key = k end)
@@ -2697,7 +2698,7 @@ do
     local cE = Controls.Card(p, "ESP master", "Player highlights / labels.")
     Controls.Toggle(cE, "Master ESP", S.ESP.Master, function(v)
         S.ESP.Master = v
-        if v then startESP() else stopESP() end
+        if v then Engines.startESP() else Engines.stopESP() end
     end)
     Controls.Toggle(cE, "Hide own player", S.ESP.HideOwn, function(v) S.ESP.HideOwn = v end)
     Controls.Slider(cE, "Max distance", 50, 5000, S.ESP.MaxDistance, 0, function(v) S.ESP.MaxDistance = v end)
@@ -2733,11 +2734,11 @@ do
     local cI = Controls.Card(p, "Item / NPC ESP", "Highlight world items + NPC humanoids.")
     Controls.MultilineTextbox(cI, "Item names (one per line)", S.ESP.ItemList, function(v)
         S.ESP.ItemList = v
-        if v ~= "" or S.ESP.NPCEsp then startItemEsp() else stopItemEsp() end
+        if v ~= "" or S.ESP.NPCEsp then Engines.startItemEsp() else Engines.stopItemEsp() end
     end, 4)
     Controls.Toggle(cI, "NPC ESP (humanoids)", S.ESP.NPCEsp, function(v)
         S.ESP.NPCEsp = v
-        if v or S.ESP.ItemList ~= "" then startItemEsp() else stopItemEsp() end
+        if v or S.ESP.ItemList ~= "" then Engines.startItemEsp() else Engines.stopItemEsp() end
     end)
 end
 
@@ -2753,33 +2754,33 @@ do
     local c2 = Controls.Card(p, "Abilities", "WASD + Space/LCtrl during fly.")
     Controls.Toggle(c2, "Fly", S.Movement.Fly, function(v)
         S.Movement.Fly = v
-        if v then startFly() else stopFly() end
+        if v then Engines.startFly() else Engines.stopFly() end
     end)
     Controls.Slider(c2, "Fly speed", 10, 300, S.Movement.FlySpeed, 0, function(v) S.Movement.FlySpeed = v end)
     Controls.Keybind(c2, "Fly toggle key", S.Movement.FlyKey, function(k) S.Movement.FlyKey = k end)
     registerKey("Fly toggle", function() return S.Movement.FlyKey end, function(k) S.Movement.FlyKey = k end)
     Controls.Toggle(c2, "Noclip", S.Movement.Noclip, function(v)
         S.Movement.Noclip = v
-        if v then startNoclip() else stopNoclip() end
+        if v then Engines.startNoclip() else Engines.stopNoclip() end
     end)
     Controls.Keybind(c2, "Noclip toggle key", S.Movement.NoclipKey, function(k) S.Movement.NoclipKey = k end)
     registerKey("Noclip toggle", function() return S.Movement.NoclipKey end, function(k) S.Movement.NoclipKey = k end)
     Controls.Toggle(c2, "Infinite jump", S.Movement.InfJump, function(v)
         S.Movement.InfJump = v
-        if v then startInfJump() else stopInfJump() end
+        if v then Engines.startInfJump() else Engines.stopInfJump() end
     end)
     Controls.Toggle(c2, "Spinbot", S.Movement.Spinbot, function(v)
         S.Movement.Spinbot = v
-        if v then startSpinbot() else stopSpinbot() end
+        if v then Engines.startSpinbot() else Engines.stopSpinbot() end
     end)
     Controls.Slider(c2, "Spin rate", 1, 100, S.Movement.SpinRate, 0, function(v) S.Movement.SpinRate = v end)
     Controls.Toggle(c2, "Moon jump", S.Movement.MoonJump, function(v)
         S.Movement.MoonJump = v
-        if v then startMoonJump() else stopMoonJump() end
+        if v then Engines.startMoonJump() else Engines.stopMoonJump() end
     end)
     Controls.Toggle(c2, "Wall climb", S.Movement.WallClimb, function(v)
         S.Movement.WallClimb = v
-        if v then startWallClimb() else stopWallClimb() end
+        if v then Engines.startWallClimb() else Engines.stopWallClimb() end
     end)
     Controls.Keybind(c2, "TP forward key", S.Movement.TpForwardKey, function(k) S.Movement.TpForwardKey = k end)
     registerKey("TP forward", function() return S.Movement.TpForwardKey end, function(k) S.Movement.TpForwardKey = k end)
@@ -2792,12 +2793,12 @@ do
     local c3 = Controls.Card(p, "Safety", "Anti-fling, anti-void, panic reset.")
     Controls.Toggle(c3, "Anti-fling", S.Movement.AntiFling, function(v)
         S.Movement.AntiFling = v
-        if v then startAntiFling() else stopAntiFling() end
+        if v then Engines.startAntiFling() else Engines.stopAntiFling() end
     end)
     Controls.Slider(c3, "Fling threshold", 50, 1000, S.Movement.AntiFlingThreshold, 0, function(v) S.Movement.AntiFlingThreshold = v end)
     Controls.Toggle(c3, "Anti-void", S.Movement.AntiVoid, function(v)
         S.Movement.AntiVoid = v
-        if v then startAntiVoid() else stopAntiVoid() end
+        if v then Engines.startAntiVoid() else Engines.stopAntiVoid() end
     end)
     Controls.Slider(c3, "Void threshold (Y)", -1000, 0, S.Movement.AntiVoidThreshold, 0, function(v) S.Movement.AntiVoidThreshold = v end)
     Controls.Keybind(c3, "Panic reset key", S.Movement.PanicResetKey, function(k) S.Movement.PanicResetKey = k end)
@@ -2903,15 +2904,15 @@ do
     local cD = Controls.Card(p, "Desync", "NetOwner + VelocitySlam + FakeCharacter (stackable).")
     Controls.Toggle(cD, "NetOwner", S.Desync.NetOwner, function(v)
         S.Desync.NetOwner = v
-        if v or S.Desync.VelocitySlam or S.Desync.FakeChar then startDesync() else stopDesync() end
+        if v or S.Desync.VelocitySlam or S.Desync.FakeChar then Engines.startDesync() else Engines.stopDesync() end
     end)
     Controls.Toggle(cD, "VelocitySlam", S.Desync.VelocitySlam, function(v)
         S.Desync.VelocitySlam = v
-        if v or S.Desync.NetOwner or S.Desync.FakeChar then startDesync() else stopDesync() end
+        if v or S.Desync.NetOwner or S.Desync.FakeChar then Engines.startDesync() else Engines.stopDesync() end
     end)
     Controls.Toggle(cD, "Fake character", S.Desync.FakeChar, function(v)
         S.Desync.FakeChar = v
-        if v or S.Desync.NetOwner or S.Desync.VelocitySlam then startDesync() else stopDesync() end
+        if v or S.Desync.NetOwner or S.Desync.VelocitySlam then Engines.startDesync() else Engines.stopDesync() end
     end)
     Controls.Slider(cD, "Offset", 0, 25, S.Desync.Offset, 0, function(v) S.Desync.Offset = v end)
     Controls.Dropdown(cD, "Direction", { "Forward", "Backward", "Left", "Right", "Up", "Down", "NE", "SW" }, S.Desync.Direction, function(v) S.Desync.Direction = v end)
@@ -3054,7 +3055,7 @@ do
     local cC = Controls.Card(p, "Chat Spy", "Log all chat including whispers.")
     Controls.Toggle(cC, "Enabled", S.ChatSpy.Enabled, function(v)
         S.ChatSpy.Enabled = v
-        if v then startChatSpy() else stopChatSpy() end
+        if v then Engines.startChatSpy() else Engines.stopChatSpy() end
     end)
     Controls.Toggle(cC, "Show whispers", S.ChatSpy.ShowWhispers, function(v) S.ChatSpy.ShowWhispers = v end)
     Controls.Toggle(cC, "Show other team", S.ChatSpy.ShowOtherTeam, function(v) S.ChatSpy.ShowOtherTeam = v end)
@@ -3118,7 +3119,7 @@ do
     local c1 = Controls.Card(p, "System", "Quality of life.")
     Controls.Toggle(c1, "Anti-AFK", S.Misc.AntiAFK, function(v)
         S.Misc.AntiAFK = v
-        if v then startAntiAFK() else stopAntiAFK() end
+        if v then Engines.startAntiAFK() else Engines.stopAntiAFK() end
     end)
     Controls.Slider(c1, "FPS cap", 30, 1000, S.Misc.FPSCap, 0, function(v)
         S.Misc.FPSCap = v
@@ -3128,11 +3129,11 @@ do
     local c2 = Controls.Card(p, "Lighting", "")
     Controls.Toggle(c2, "Fullbright", S.Misc.Fullbright, function(v)
         S.Misc.Fullbright = v
-        if v then startFullbright() else stopFullbright() end
+        if v then Engines.startFullbright() else Engines.stopFullbright() end
     end)
     Controls.Toggle(c2, "No fog", S.Misc.NoFog, function(v)
         S.Misc.NoFog = v
-        if v then startNoFog() else stopNoFog() end
+        if v then Engines.startNoFog() else Engines.stopNoFog() end
     end)
     Controls.Toggle(c2, "No shadows", S.Misc.NoShadows, function(v)
         S.Misc.NoShadows = v
@@ -3147,7 +3148,7 @@ do
     local c4 = Controls.Card(p, "Visual extras", "Crosshair / hit marker / no recoil.")
     Controls.Toggle(c4, "Crosshair", S.Misc.Crosshair, function(v)
         S.Misc.Crosshair = v
-        if v then startCrosshair() else stopCrosshair() end
+        if v then Engines.startCrosshair() else Engines.stopCrosshair() end
     end)
     Controls.Slider(c4, "Crosshair size", 4, 30, S.Misc.CrosshairSize, 0, function(v) S.Misc.CrosshairSize = v end)
     Controls.ColorPicker(c4, "Crosshair color", S.Misc.CrosshairColor, function(v) S.Misc.CrosshairColor = v end)
@@ -3227,7 +3228,7 @@ do
         Controls.Keybind(c4, kbCopy.name, kbCopy.get(), function(k) kbCopy.set(k); saveConfig() end)
     end
 
-    local c5 = Controls.Card(p, "About", "FREEZER v6.0.0 — safe-init build, hooks lazy, all defaults off.")
+    local c5 = Controls.Card(p, "About", "FREEZER v6.0.0 â€” safe-init build, hooks lazy, all defaults off.")
 end
 
 -- Default page
@@ -3246,19 +3247,19 @@ track(UserInputService.InputBegan:Connect(function(input, gpe)
     if key == S.Master.ToggleKey then HubGui.Enabled = not HubGui.Enabled end
     if key == S.Movement.FlyKey then
         S.Movement.Fly = not S.Movement.Fly
-        if S.Movement.Fly then startFly() else stopFly() end
+        if S.Movement.Fly then Engines.startFly() else Engines.stopFly() end
     end
     if key == S.Movement.NoclipKey then
         S.Movement.Noclip = not S.Movement.Noclip
-        if S.Movement.Noclip then startNoclip() else stopNoclip() end
+        if S.Movement.Noclip then Engines.startNoclip() else Engines.stopNoclip() end
     end
     if key == S.Teleport.TpNearestKey then tpNearestPlayer() end
     if key == S.Teleport.TpRandomKey then tpRandomPlayer() end
     if key == S.Teleport.ReturnLastKey and lastTpPos then teleportTo(lastTpPos) end
     if key == S.Movement.PanicResetKey then
-        S.Movement.Fly = false; stopFly()
-        S.Movement.Noclip = false; stopNoclip()
-        S.Aimbot.Enabled = false; stopAimbot()
+        S.Movement.Fly = false; Engines.stopFly()
+        S.Movement.Noclip = false; Engines.stopNoclip()
+        S.Aimbot.Enabled = false; Engines.stopAimbot()
         S.SilentAim.Enabled = false
         S.MagicBullet.Enabled = false
         notify("Panic", "All combat disabled", C.Warning)
@@ -3321,11 +3322,11 @@ local API = {
     ScanBodyParts = scanBodyParts,
     Destroy = function()
         clearConnections()
-        stopAimbot(); stopESP(); stopFly(); stopNoclip(); stopInfJump()
-        stopAntiAFK(); stopFullbright(); stopFovCircle()
-        stopTriggerBot(); stopDesync(); stopSpinbot(); stopMoonJump()
-        stopWallClimb(); stopAntiFling(); stopAntiVoid()
-        stopItemEsp(); stopChatSpy(); stopCrosshair(); stopNoFog()
+        Engines.stopAimbot(); Engines.stopESP(); Engines.stopFly(); Engines.stopNoclip(); Engines.stopInfJump()
+        Engines.stopAntiAFK(); Engines.stopFullbright(); Engines.stopFovCircle()
+        Engines.stopTriggerBot(); Engines.stopDesync(); Engines.stopSpinbot(); Engines.stopMoonJump()
+        Engines.stopWallClimb(); Engines.stopAntiFling(); Engines.stopAntiVoid()
+        Engines.stopItemEsp(); Engines.stopChatSpy(); Engines.stopCrosshair(); Engines.stopNoFog()
         pcall(function() HubGui:Destroy() end)
         pcall(function() NotifyGui:Destroy() end)
         pcall(function() if FallbackLayer then FallbackLayer:Destroy() end end)
