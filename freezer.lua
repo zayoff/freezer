@@ -1,4 +1,4 @@
-﻿--[[
+--[[
     FREEZER v6.0.0  ::  Extended build
     Single-file Roblox executor menu, by ENI for LO
 
