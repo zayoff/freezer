@@ -551,12 +551,7 @@ local TitleBar = new("Frame", {
     Position = UDim2.new(0, 0, 0, 2), Size = UDim2.new(1, 0, 0, 42),
     Parent = Window,
 })
-new("Frame", {
-    BackgroundColor3 = C.Accent, BorderSizePixel = 0,
-    Position = UDim2.new(0, 16, 0.5, -7), Size = UDim2.new(0, 14, 0, 14),
-    Parent = TitleBar,
-}).Parent.Parent.Parent = nil  -- placeholder no, fix below
--- Logo (re-built proper)
+-- Logo
 local Logo = new("Frame", {
     BackgroundColor3 = C.Accent, BorderSizePixel = 0,
     Position = UDim2.new(0, 16, 0.5, -7), Size = UDim2.new(0, 14, 0, 14),
