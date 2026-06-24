@@ -47,21 +47,34 @@ local function safeGet(name)
 end
 
 local cloneref         = safeGet("cloneref")         or function(o) return o end
--- Capture the script chunk env directly — on Solara this inherits all the
--- executor globals (hookmetamethod, getrawmetatable, etc.). safeGet's getgenv
--- path returns nil on some Solara builds, so we ALSO try the raw chunk env.
+-- SOLARA SANDBOX BYPASS:
+-- Solara isolates loadstring chunks from executor globals. The user runs a
+-- bootstrap snippet BEFORE loadstring that captures exploit fns into
+-- getgenv()._FREEZER_EXPLOIT (getgenv survives the sandbox). We read from
+-- there first, then fall back to whatever's visible in the chunk env.
+local _exploit = {}
+pcall(function()
+    local g = getgenv and getgenv()
+    if g and type(g._FREEZER_EXPLOIT) == "table" then
+        _exploit = g._FREEZER_EXPLOIT
+    end
+end)
+
 local _scriptEnv
 pcall(function() _scriptEnv = getfenv() end)
 _scriptEnv = _scriptEnv or _G or {}
 
 local function rawglobal(name)
-    -- 1. script chunk env (most reliable for Solara)
-    local v = _scriptEnv[name]
+    -- 1. captured bootstrap (most reliable across sandboxed executors)
+    local v = _exploit[name]
     if v ~= nil then return v end
-    -- 2. _G
+    -- 2. script chunk env
+    v = _scriptEnv[name]
+    if v ~= nil then return v end
+    -- 3. _G
     v = _G[name]
     if v ~= nil then return v end
-    -- 3. safeGet fallback (getgenv/getfenv(0)/loadstring)
+    -- 4. safeGet fallback (getgenv/getfenv(0)/loadstring)
     return safeGet(name)
 end
 
