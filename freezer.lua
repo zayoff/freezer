@@ -47,14 +47,32 @@ local function safeGet(name)
 end
 
 local cloneref         = safeGet("cloneref")         or function(o) return o end
-local _gethui          = safeGet("gethui")
-local hookmetamethod   = safeGet("hookmetamethod")
-local hookfunction     = safeGet("hookfunction")
-local getrawmetatable  = safeGet("getrawmetatable")
-local setreadonly      = safeGet("setreadonly")      or function() end
-local newcclosure      = safeGet("newcclosure")      or function(f) return f end
-local checkcaller      = safeGet("checkcaller")      or function() return false end
-local getnamecallmethod= safeGet("getnamecallmethod")
+-- Capture the script chunk env directly — on Solara this inherits all the
+-- executor globals (hookmetamethod, getrawmetatable, etc.). safeGet's getgenv
+-- path returns nil on some Solara builds, so we ALSO try the raw chunk env.
+local _scriptEnv
+pcall(function() _scriptEnv = getfenv() end)
+_scriptEnv = _scriptEnv or _G or {}
+
+local function rawglobal(name)
+    -- 1. script chunk env (most reliable for Solara)
+    local v = _scriptEnv[name]
+    if v ~= nil then return v end
+    -- 2. _G
+    v = _G[name]
+    if v ~= nil then return v end
+    -- 3. safeGet fallback (getgenv/getfenv(0)/loadstring)
+    return safeGet(name)
+end
+
+local _gethui          = rawglobal("gethui")
+local hookmetamethod   = rawglobal("hookmetamethod")
+local hookfunction     = rawglobal("hookfunction")
+local getrawmetatable  = rawglobal("getrawmetatable")
+local setreadonly      = rawglobal("setreadonly")      or function() end
+local newcclosure      = rawglobal("newcclosure")      or function(f) return f end
+local checkcaller      = rawglobal("checkcaller")      or function() return false end
+local getnamecallmethod= rawglobal("getnamecallmethod")
 local setfpscap        = safeGet("setfpscap")
 local writefile        = safeGet("writefile")
 local readfile         = safeGet("readfile")
