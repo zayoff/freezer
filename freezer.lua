@@ -1696,91 +1696,147 @@ if mt then
     pcall(function() setreadonly(mt, false) end)
     local oldNamecall = mt.__namecall
     if oldNamecall then
+        -- Fast safety wrapper: any error inside the hook falls back to original.
+        -- Early-out on checkcaller (our own kit traffic) and master-disabled.
         mt.__namecall = newcclosure(function(self, ...)
-            local method = getnamecallmethod and getnamecallmethod() or ""
-            local args = { ... }
-            if not checkcaller() and (method == "FireServer" or method == "InvokeServer") then
-                if State.Master.Enabled then
+            -- Always let kit traffic and master-off pass through untouched.
+            if checkcaller() then return oldNamecall(self, ...) end
+            if not (State and State.Master and State.Master.Enabled) then
+                return oldNamecall(self, ...)
+            end
+            -- Self must be an Instance for any of our logic to run safely.
+            if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
+
+            local override, overrideValue
+            local ok = pcall(function()
+                local method = getnamecallmethod and getnamecallmethod() or ""
+                if method == "" then return end
+                local args = { ... }
+
+                -- FireServer / InvokeServer: Silent Aim + Magic Bullet
+                if method == "FireServer" or method == "InvokeServer" then
+                    local fullName = ""
+                    pcall(function() fullName = self:GetFullName() end)
+
                     -- AUTO-detect correlation
                     if State.Aim.SilentAim.Enabled and State.Aim.SilentAim.Method == "AUTO" and not autoDetectedRemote then
                         if tick() - lastClickTime < 0.1 then
                             for _, a in ipairs(args) do
                                 if typeof(a) == "Vector3" or typeof(a) == "CFrame" then
                                     autoDetectedRemote = self
-                                    State.Aim.SilentAim.RemotePath = self:GetFullName()
-                                    pcall(notify, { title = "Silent Aim", body = "Auto-detected: " .. self.Name })
+                                    State.Aim.SilentAim.RemotePath = fullName
+                                    pcall(notify, { title = "Silent Aim", body = "Auto-detected: " .. (self.Name or "?") })
                                     break
                                 end
                             end
                         end
                     end
-                    -- Silent Aim modify args
+
+                    -- Silent Aim + Magic Bullet redirection
                     local shouldRedirect = false
                     if State.Aim.SilentAim.Enabled then
                         if State.Aim.SilentAim.Method == "AUTO" and self == autoDetectedRemote then
                             shouldRedirect = true
-                        elseif State.Aim.SilentAim.RemotePath ~= "" and self:GetFullName() == State.Aim.SilentAim.RemotePath then
+                        elseif State.Aim.SilentAim.RemotePath ~= "" and fullName == State.Aim.SilentAim.RemotePath then
                             shouldRedirect = true
                         end
                     end
-                    if State.Aim.MagicBullet.Enabled and State.Aim.MagicBullet.RemotePath ~= "" and self:GetFullName() == State.Aim.MagicBullet.RemotePath then
+                    if State.Aim.MagicBullet.Enabled and State.Aim.MagicBullet.RemotePath ~= "" and fullName == State.Aim.MagicBullet.RemotePath then
                         shouldRedirect = true
                     end
                     if shouldRedirect then
                         local target = findSilentTarget()
-                        if target then
+                        if target and target.part then
                             local hitPos = target.part.Position
                             for i, a in ipairs(args) do
                                 if typeof(a) == "Vector3" then
                                     args[i] = hitPos
-                                    return oldNamecall(self, table.unpack(args))
+                                    override = true
+                                    overrideValue = { oldNamecall(self, table.unpack(args)) }
+                                    return
                                 elseif typeof(a) == "CFrame" then
                                     args[i] = CFrame.new(hitPos)
-                                    return oldNamecall(self, table.unpack(args))
+                                    override = true
+                                    overrideValue = { oldNamecall(self, table.unpack(args)) }
+                                    return
                                 end
                             end
                         end
                     end
                 end
-            end
-            -- Anti-cheat namecall blocklist
-            if State.Spoof.AntiCheat.Enabled and not checkcaller() then
-                local blocklist = State.Spoof.AntiCheat.NamecallBlocklist or ""
-                for line in blocklist:gmatch("[^\r\n]+") do
-                    if line ~= "" and method:lower():find(line:lower()) then return nil end
+
+                -- Anti-cheat namecall blocklist (regex match against method name)
+                if State.Spoof.AntiCheat.Enabled then
+                    local blocklist = State.Spoof.AntiCheat.NamecallBlocklist or ""
+                    if blocklist ~= "" then
+                        for line in blocklist:gmatch("[^\r\n]+") do
+                            if line ~= "" and method:lower():find(line:lower(), 1, true) then
+                                override = true
+                                overrideValue = { nil }
+                                return
+                            end
+                        end
+                    end
+                    if State.Spoof.AntiCheat.AntiKick and method == "Kick" then
+                        override = true
+                        overrideValue = { nil }
+                        return
+                    end
                 end
-                if State.Spoof.AntiCheat.AntiKick and method == "Kick" then return nil end
-            end
-            -- Spoof: UserOwnsGamePassAsync, Premium, etc.
-            if State.Spoof.Gamepass.Enabled and method == "UserOwnsGamePassAsync" then
-                local _, gpid = ...
-                local wl = State.Spoof.Gamepass.Whitelist or ""
-                if wl == "" then return true end
-                for id in wl:gmatch("%d+") do
-                    if tonumber(id) == gpid then return true end
+
+                -- Spoof: gamepass / asset / badge / group rank
+                if State.Spoof.Gamepass.Enabled and method == "UserOwnsGamePassAsync" then
+                    local _, gpid = ...
+                    local wl = State.Spoof.Gamepass.Whitelist or ""
+                    if wl == "" then
+                        override = true; overrideValue = { true }; return
+                    end
+                    for id in wl:gmatch("%d+") do
+                        if tonumber(id) == gpid then
+                            override = true; overrideValue = { true }; return
+                        end
+                    end
                 end
-            end
-            if State.Spoof.Asset.Enabled and method == "PlayerOwnsAsset" then return true end
-            if State.Spoof.Badge.Enabled and method == "UserHasBadgeAsync" then return true end
-            if State.Spoof.Group.Enabled and method == "GetRankInGroup" then
-                return State.Spoof.Group.Rank
-            end
+                if State.Spoof.Asset.Enabled and method == "PlayerOwnsAsset" then
+                    override = true; overrideValue = { true }; return
+                end
+                if State.Spoof.Badge.Enabled and method == "UserHasBadgeAsync" then
+                    override = true; overrideValue = { true }; return
+                end
+                if State.Spoof.Group.Enabled and method == "GetRankInGroup" then
+                    override = true; overrideValue = { State.Spoof.Group.Rank }; return
+                end
+            end)
+
+            if ok and override then return table.unpack(overrideValue) end
             return oldNamecall(self, ...)
         end)
     end
-    -- __index hook for Premium / WalkSpeed spoofing
+
+    -- __index hook for Premium / WalkSpeed spoofing — fully pcall-wrapped
     local oldIndex = mt.__index
     if oldIndex then
         mt.__index = newcclosure(function(self, key)
-            if not checkcaller() then
-                if State.Spoof.Premium.Enabled and key == "MembershipType" and self == LocalPlayer then
-                    return Enum.MembershipType.Premium
-                end
-                if State.Spoof.AntiCheat.Enabled and typeof(self) == "Instance" and self:IsA("Humanoid") then
-                    if key == "WalkSpeed" then return State.Spoof.AntiCheat.FakeWalkSpeed end
-                    if key == "JumpPower" then return State.Spoof.AntiCheat.FakeJumpPower end
-                end
+            if checkcaller() then return oldIndex(self, key) end
+            if not (State and State.Master and State.Master.Enabled) then
+                return oldIndex(self, key)
             end
+            local override, overrideValue
+            pcall(function()
+                if typeof(self) ~= "Instance" then return end
+                if State.Spoof.Premium.Enabled and key == "MembershipType" and self == LocalPlayer then
+                    override = true; overrideValue = Enum.MembershipType.Premium; return
+                end
+                if State.Spoof.AntiCheat.Enabled and self:IsA("Humanoid") then
+                    if key == "WalkSpeed" then
+                        override = true; overrideValue = State.Spoof.AntiCheat.FakeWalkSpeed; return
+                    end
+                    if key == "JumpPower" then
+                        override = true; overrideValue = State.Spoof.AntiCheat.FakeJumpPower; return
+                    end
+                end
+            end)
+            if override then return overrideValue end
             return oldIndex(self, key)
         end)
     end
