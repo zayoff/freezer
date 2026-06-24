@@ -86,6 +86,28 @@ local setreadonly      = rawglobal("setreadonly")      or function() end
 local newcclosure      = rawglobal("newcclosure")      or function(f) return f end
 local checkcaller      = rawglobal("checkcaller")      or function() return false end
 local getnamecallmethod= rawglobal("getnamecallmethod")
+
+-- POLYFILL: this Solara build (and some others) does not expose hookmetamethod
+-- as a global, but DOES expose getrawmetatable + setreadonly + newcclosure.
+-- We rebuild hookmetamethod from those primitives so every install path works.
+if not hookmetamethod and getrawmetatable then
+    hookmetamethod = function(object, method, hook)
+        local mt = getrawmetatable(object)
+        if not mt then return nil end
+        pcall(setreadonly, mt, false)
+        local original = mt[method]
+        mt[method] = hook
+        pcall(setreadonly, mt, true)
+        return original
+    end
+end
+
+-- POLYFILL: getnamecallmethod fallback — many executors expose it but some sandboxes
+-- don't. Without it, the __namecall hook can't tell which method is being called.
+-- The polyfill returns "" which makes the hook a passthrough until upgraded.
+if not getnamecallmethod then
+    getnamecallmethod = function() return "" end
+end
 local setfpscap        = safeGet("setfpscap")
 local writefile        = safeGet("writefile")
 local readfile         = safeGet("readfile")
