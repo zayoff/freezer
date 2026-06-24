@@ -1,21 +1,48 @@
 --[[
-    FREEZER v6.0.0  ::  Extended build
+    FREEZER v6.2.0  ::  Targeted-fix build
     Single-file Roblox executor menu, by ENI for LO
 
     Design principle: ZERO global hooks installed at load. Hooks for Silent Aim,
     Magic Bullet, Perms Spoof, and AntiCheat Bypass are installed LAZILY when the
     user enables those features and gated by state flags. All defaults OFF.
+
+    v6.2 changes:
+      A. Solara-tolerant safeGet (getfenv(1) first, loadstring fallback) +
+         each install fn surfaces real errors.
+      B. HSV color picker popup with SV square + hue bar + hex + preview.
+      C. Ghost Desync rewritten: freeze server position; optional FreeCam;
+         optional camera-origin override for silent shots.
+      D. Cage card gets LOCAL-ONLY label and a new TRAP/RELEASE pair that
+         force-locks aimbot+silent to a chosen player via S.Aimbot.ForceTarget.
+      E. New Movement card: Ninja TP — stick behind nearest enemy each Heartbeat.
 ]]
 
---[[ EXPLOIT FN RESOLUTION ]]
+--[[ EXPLOIT FN RESOLUTION (Solara-tolerant) ]]
 local function safeGet(name)
-    local ok, val
+    -- 1. Try as a direct global via getfenv(1) (calling env)
+    local ok, val = pcall(function()
+        local g = getfenv(1)
+        return g and g[name]
+    end)
+    if ok and val then return val end
+    -- 2. getgenv()
     ok, val = pcall(function() return getgenv and getgenv()[name] end)
     if ok and val then return val end
+    -- 3. getfenv(0) script env
     ok, val = pcall(function() return getfenv(0)[name] end)
     if ok and val then return val end
+    -- 4. shared/_G
     ok, val = pcall(function() return _G[name] end)
     if ok and val then return val end
+    -- 5. last-ditch: try the function name directly via raw access in a string-eval
+    local fn
+    ok = pcall(function()
+        local loader = loadstring or load
+        if not loader then return end
+        local chunk = loader("return " .. name)
+        if chunk then fn = chunk() end
+    end)
+    if ok and fn then return fn end
     return nil
 end
 
@@ -99,6 +126,7 @@ local S = {
         TargetHighlight = false,
         TargetHighlightColor = Color3.fromRGB(255, 65, 180),
         LockSound = false, LockSoundId = "rbxassetid://9118823106",
+        ForceTarget = nil,
     },
     SilentAim = {
         Enabled = false, FOV = 200, TargetPart = "Head",
@@ -116,9 +144,12 @@ local S = {
         Key = "Q", KnockCheck = false,
     },
     Desync = {
-        NetOwner = false, VelocitySlam = false, FakeChar = false,
-        Offset = 5, Direction = "Forward",
-        AutoEngage = false, TriggerKey = "F",
+        Enabled = false, TriggerKey = "F",
+        FreeCam = false, FreeCamSpeed = 60,
+        UseCamForShots = false,
+        engaged = false, frozenCFrame = nil,
+        freezeConn = nil, camConn = nil,
+        origCameraType = nil, camPos = nil,
         LastEngagedAt = 0,
     },
     Hitbox = {
@@ -170,6 +201,11 @@ local S = {
         AntiFling = false, AntiFlingThreshold = 200,
         AntiVoid = false, AntiVoidThreshold = -200,
         PanicResetKey = "End",
+        NinjaTP = {
+            Enabled = false, StickDistance = 2.5,
+            FaceTarget = true, TeamCheck = true, Key = "Z",
+            conn = nil,
+        },
     },
     Teleport = {
         Slots = {}, Waypoints = {},
@@ -982,57 +1018,259 @@ function Controls.ColorPicker(parent, label, defaultColor3, callback)
     local panel = nil
     local outsideConn = nil
     local function closePanel()
-        if panel then panel:Destroy(); panel = nil end
+        if panel then pcall(function() panel:Destroy() end); panel = nil end
         if outsideConn then outsideConn:Disconnect(); outsideConn = nil end
     end
 
     swatch.MouseButton1Click:Connect(function()
         if panel then closePanel(); return end
+
+        -- Decompose current color into HSV
+        local curH, curS, curV
+        pcall(function() curH, curS, curV = Color3.toHSV(color) end)
+        curH = curH or 0; curS = curS or 1; curV = curV or 1
+
+        -- Anchor popup relative to swatch screen position, clamped to screen
+        local sw, sh = 220, 290
+        local sp, ss = swatch.AbsolutePosition, swatch.AbsoluteSize
+        local px = sp.X - sw + ss.X
+        local py = sp.Y + ss.Y + 6
+        local vp = (Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize) or Vector2.new(1280, 720)
+        if px + sw > vp.X then px = vp.X - sw - 4 end
+        if px < 4 then px = 4 end
+        if py + sh > vp.Y then py = sp.Y - sh - 6 end
+        if py < 4 then py = 4 end
+
         panel = new("Frame", {
             BackgroundColor3 = C.Card, BorderSizePixel = 0,
-            Position = UDim2.fromOffset(swatch.AbsolutePosition.X - 200, swatch.AbsolutePosition.Y + 32),
-            Size = UDim2.new(0, 220, 0, 180), Parent = NotifyGui,
+            Position = UDim2.fromOffset(px, py),
+            Size = UDim2.new(0, sw, 0, sh), Parent = NotifyGui,
         })
         corner(panel, 6); stroke(panel, C.Border, 1)
-        pad(panel, 10)
-        listLayout(panel, 6)
+
+        -- Header row
+        local header = new("Frame", {
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0, 8),
+            Size = UDim2.new(1, -20, 0, 18), Parent = panel,
+        })
         new("TextLabel", {
-            BackgroundTransparency = 1, Text = "Color picker",
+            BackgroundTransparency = 1, Text = "Pick a color",
             Font = Enum.Font.GothamSemibold, TextSize = 13,
             TextColor3 = C.Text, TextXAlignment = Enum.TextXAlignment.Left,
-            Size = UDim2.new(1, 0, 0, 16), Parent = panel,
+            Size = UDim2.new(1, -24, 1, 0), Parent = header,
         })
+        local closeX = new("TextButton", {
+            BackgroundTransparency = 1, Text = "X",
+            Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = C.TextSecondary,
+            Position = UDim2.new(1, -18, 0, 0), Size = UDim2.new(0, 18, 1, 0),
+            AutoButtonColor = false, Parent = header,
+        })
+        closeX.MouseButton1Click:Connect(function() closePanel() end)
 
-        local function makeNumRow(name, val)
-            local rr = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22), Parent = panel })
-            new("TextLabel", {
-                BackgroundTransparency = 1, Text = name,
-                Font = Enum.Font.Gotham, TextSize = 12,
-                TextColor3 = C.TextSecondary, TextXAlignment = Enum.TextXAlignment.Left,
-                Size = UDim2.new(0, 30, 1, 0), Parent = rr,
+        -- SV square
+        local svSize = 180
+        local svBox = new("Frame", {
+            BackgroundColor3 = Color3.fromHSV(curH, 1, 1), BorderSizePixel = 0,
+            Position = UDim2.new(0, 10, 0, 32),
+            Size = UDim2.new(0, svSize, 0, svSize), Parent = panel,
+        })
+        corner(svBox, 4); stroke(svBox, C.Border, 1)
+        -- White → hue (saturation axis)
+        local satGrad = Instance.new("UIGradient")
+        satGrad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+            ColorSequenceKeypoint.new(1, Color3.fromHSV(curH, 1, 1)),
+        })
+        satGrad.Parent = svBox
+        -- Overlay black gradient on Y for value
+        local valOverlay = new("Frame", {
+            BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 1, 0), Parent = svBox,
+        })
+        local valGrad = Instance.new("UIGradient")
+        valGrad.Rotation = 90
+        valGrad.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        valGrad.Parent = valOverlay
+        -- Selector circle
+        local svSel = new("Frame", {
+            BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(curS, 0, 1 - curV, 0),
+            Size = UDim2.new(0, 10, 0, 10), Parent = valOverlay,
+        })
+        corner(svSel, 5); stroke(svSel, Color3.new(0, 0, 0), 1)
+
+        -- Hue bar
+        local hueBar = new("Frame", {
+            BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+            Position = UDim2.new(0, 10, 0, 32 + svSize + 8),
+            Size = UDim2.new(0, svSize, 0, 20), Parent = panel,
+        })
+        corner(hueBar, 4); stroke(hueBar, C.Border, 1)
+        local hueGrad = Instance.new("UIGradient")
+        local hueKeys = {}
+        for i = 0, 6 do
+            local t = i / 6
+            table.insert(hueKeys, ColorSequenceKeypoint.new(t, Color3.fromHSV(t, 1, 1)))
+        end
+        hueGrad.Color = ColorSequence.new(hueKeys)
+        hueGrad.Parent = hueBar
+        local hueThumb = new("Frame", {
+            BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(curH, 0, 0.5, 0),
+            Size = UDim2.new(0, 4, 1, 4), Parent = hueBar,
+        })
+        corner(hueThumb, 2); stroke(hueThumb, Color3.new(0, 0, 0), 1)
+
+        -- Forward declarations so drag handlers can reference these before assignment
+        local hexInputSync, previewSync
+
+        local function recompute()
+            local rgb = Color3.fromHSV(curH, curS, curV)
+            color = rgb
+            svBox.BackgroundColor3 = Color3.fromHSV(curH, 1, 1)
+            satGrad.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+                ColorSequenceKeypoint.new(1, Color3.fromHSV(curH, 1, 1)),
             })
-            local tb = new("TextBox", {
-                BackgroundColor3 = C.Content, BorderSizePixel = 0,
-                Position = UDim2.new(0, 36, 0, 0),
-                Size = UDim2.new(1, -36, 1, 0),
-                Text = tostring(val), Font = Enum.Font.Code, TextSize = 12,
-                TextColor3 = C.Text, ClearTextOnFocus = false, Parent = rr,
-            })
-            corner(tb, 3); stroke(tb, C.Border, 1)
-            return tb
+            svSel.Position = UDim2.new(curS, 0, 1 - curV, 0)
+            hueThumb.Position = UDim2.new(curH, 0, 0.5, 0)
         end
 
-        local rTB = makeNumRow("R", math.floor(color.R * 255))
-        local gTB = makeNumRow("G", math.floor(color.G * 255))
-        local bTB = makeNumRow("B", math.floor(color.B * 255))
-        local hexTB = makeNumRow("Hex", string.format("%02X%02X%02X", math.floor(color.R*255), math.floor(color.G*255), math.floor(color.B*255)))
+        -- SV drag handling
+        local svDragging = false
+        local function updateSV(input)
+            local pos = svBox.AbsolutePosition
+            local size = svBox.AbsoluteSize
+            local mx = input.Position.X - pos.X
+            local my = input.Position.Y - pos.Y
+            curS = math.clamp(mx / size.X, 0, 1)
+            curV = 1 - math.clamp(my / size.Y, 0, 1)
+            recompute()
+            if hexInputSync then hexInputSync() end
+            if previewSync then previewSync() end
+        end
+        svBox.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                svDragging = true
+                updateSV(input)
+            end
+        end)
+        svBox.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                svDragging = false
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if svDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                updateSV(input)
+            end
+        end)
 
-        local btnRow = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 30), Parent = panel })
+        -- Hue drag handling
+        local hueDragging = false
+        local function updateHue(input)
+            local pos = hueBar.AbsolutePosition
+            local size = hueBar.AbsoluteSize
+            local mx = input.Position.X - pos.X
+            curH = math.clamp(mx / size.X, 0, 1)
+            recompute()
+            if hexInputSync then hexInputSync() end
+            if previewSync then previewSync() end
+        end
+        hueBar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                hueDragging = true
+                updateHue(input)
+            end
+        end)
+        hueBar.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                hueDragging = false
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if hueDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                updateHue(input)
+            end
+        end)
+
+        -- Hex input + preview swatch
+        local bottomY = 32 + svSize + 8 + 20 + 8
+        local hexRow = new("Frame", {
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0, bottomY),
+            Size = UDim2.new(0, svSize, 0, 22), Parent = panel,
+        })
+        local hexLbl = new("TextLabel", {
+            BackgroundTransparency = 1, Text = "Hex",
+            Font = Enum.Font.Gotham, TextSize = 12,
+            TextColor3 = C.TextSecondary, TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(0, 28, 1, 0), Parent = hexRow,
+        })
+        local hexTB = new("TextBox", {
+            BackgroundColor3 = C.Content, BorderSizePixel = 0,
+            Position = UDim2.new(0, 32, 0, 0),
+            Size = UDim2.new(1, -64, 1, 0),
+            Text = string.format("%02X%02X%02X", math.floor(color.R*255), math.floor(color.G*255), math.floor(color.B*255)),
+            Font = Enum.Font.Code, TextSize = 12, TextColor3 = C.Text,
+            ClearTextOnFocus = false, Parent = hexRow,
+        })
+        corner(hexTB, 3); stroke(hexTB, C.Border, 1)
+        local preview = new("Frame", {
+            BackgroundColor3 = color, BorderSizePixel = 0,
+            Position = UDim2.new(1, -28, 0, 0),
+            Size = UDim2.new(0, 28, 1, 0), Parent = hexRow,
+        })
+        corner(preview, 3); stroke(preview, C.Border, 1)
+
+        hexInputSync = function()
+            hexTB.Text = string.format("%02X%02X%02X",
+                math.floor(color.R * 255 + 0.5),
+                math.floor(color.G * 255 + 0.5),
+                math.floor(color.B * 255 + 0.5))
+        end
+        previewSync = function()
+            preview.BackgroundColor3 = color
+        end
+
+        hexTB.FocusLost:Connect(function()
+            local hex = (hexTB.Text or ""):gsub("[^0-9A-Fa-f]", "")
+            if #hex >= 6 then
+                local hr = tonumber(hex:sub(1, 2), 16)
+                local hg = tonumber(hex:sub(3, 4), 16)
+                local hb = tonumber(hex:sub(5, 6), 16)
+                if hr and hg and hb then
+                    color = Color3.fromRGB(hr, hg, hb)
+                    local h2, s2, v2 = Color3.toHSV(color)
+                    curH, curS, curV = h2, s2, v2
+                    recompute()
+                    previewSync()
+                end
+            end
+            hexInputSync()
+        end)
+
+        -- Apply / Cancel buttons
+        local btnRow = new("Frame", {
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0, bottomY + 28),
+            Size = UDim2.new(0, svSize, 0, 28), Parent = panel,
+        })
         local apply = new("TextButton", {
             BackgroundColor3 = C.Accent, BorderSizePixel = 0,
             Size = UDim2.new(0.5, -4, 1, 0),
             Text = "Apply", Font = Enum.Font.GothamMedium, TextSize = 12,
-            TextColor3 = Color3.new(1, 1, 1), Parent = btnRow,
+            TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = false, Parent = btnRow,
         })
         corner(apply, 4)
         local cancel = new("TextButton", {
@@ -1040,22 +1278,11 @@ function Controls.ColorPicker(parent, label, defaultColor3, callback)
             Position = UDim2.new(0.5, 4, 0, 0),
             Size = UDim2.new(0.5, -4, 1, 0),
             Text = "Cancel", Font = Enum.Font.GothamMedium, TextSize = 12,
-            TextColor3 = C.Text, Parent = btnRow,
+            TextColor3 = C.Text, AutoButtonColor = false, Parent = btnRow,
         })
         corner(cancel, 4); stroke(cancel, C.Border, 1)
 
         apply.MouseButton1Click:Connect(function()
-            local r = tonumber(rTB.Text) or 0
-            local g = tonumber(gTB.Text) or 0
-            local b = tonumber(bTB.Text) or 0
-            local hex = hexTB.Text
-            if hex and #hex >= 6 then
-                local hr = tonumber(hex:sub(1, 2), 16)
-                local hg = tonumber(hex:sub(3, 4), 16)
-                local hb = tonumber(hex:sub(5, 6), 16)
-                if hr and hg and hb then r, g, b = hr, hg, hb end
-            end
-            color = Color3.fromRGB(math.clamp(r, 0, 255), math.clamp(g, 0, 255), math.clamp(b, 0, 255))
             swatch.BackgroundColor3 = color
             if callback then pcall(callback, color) end
             saveConfig()
@@ -1063,14 +1290,17 @@ function Controls.ColorPicker(parent, label, defaultColor3, callback)
         end)
         cancel.MouseButton1Click:Connect(closePanel)
 
+        recompute(); previewSync(); hexInputSync()
+
         task.wait(0.1)
         outsideConn = UserInputService.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                if not panel then return end
                 local mp = UserInputService:GetMouseLocation()
-                local pp, ps = panel.AbsolutePosition, panel.AbsoluteSize
-                if mp.X < pp.X or mp.X > pp.X + ps.X or mp.Y < pp.Y or mp.Y > pp.Y + ps.Y then
-                    local sp, ss = swatch.AbsolutePosition, swatch.AbsoluteSize
-                    if mp.X < sp.X or mp.X > sp.X + ss.X or mp.Y < sp.Y or mp.Y > sp.Y + ss.Y then
+                local pp, ps2 = panel.AbsolutePosition, panel.AbsoluteSize
+                if mp.X < pp.X or mp.X > pp.X + ps2.X or mp.Y < pp.Y or mp.Y > pp.Y + ps2.Y then
+                    local sp2, ss2 = swatch.AbsolutePosition, swatch.AbsoluteSize
+                    if mp.X < sp2.X or mp.X > sp2.X + ss2.X or mp.Y < sp2.Y or mp.Y > sp2.Y + ss2.Y then
                         closePanel()
                     end
                 end
@@ -1283,10 +1513,20 @@ local function predictPosition(part, mult)
     return part.Position + vel * (mult or 0.165)
 end
 
--- Find best target
+-- Find best target (with optional ForceTarget override from Trap mode)
 local function findTarget(maxFovPx, partName, teamCheck, wallCheck, prediction, predMult)
     local cam = GetCamera()
     if not cam then return nil end
+    -- Trap override: if ForceTarget is set and that player is alive with a valid part, use them.
+    local forced = S.Aimbot.ForceTarget
+    if forced and forced.Parent and forced.Character then
+        local fhum = forced.Character:FindFirstChildOfClass("Humanoid")
+        local fpart = forced.Character:FindFirstChild(partName)
+        if fhum and fhum.Health > 0 and fpart then
+            local pos = prediction and predictPosition(fpart, predMult) or fpart.Position
+            return { plr = forced, part = fpart, predPos = pos }
+        end
+    end
     local mousePos = UserInputService:GetMouseLocation()
     local best, bestDist = nil, maxFovPx
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -1559,14 +1799,19 @@ local pushRemote
 -- Silent Aim / Magic Bullet __namecall hook (lazy)
 local function installNamecallHook()
     if silentHookInstalled then return true end
-    if not hookmetamethod or not getrawmetatable then
-        notify("Hook", "Missing exploit fn (hookmetamethod / getrawmetatable)", C.Danger, 6)
-        return false
-    end
-    local ok = pcall(function()
+    local ok, err = pcall(function()
+        -- Re-resolve at install time in case exploit fns become available later
+        hookmetamethod  = hookmetamethod  or safeGet("hookmetamethod")
+        getrawmetatable = getrawmetatable or safeGet("getrawmetatable")
+        newcclosure     = newcclosure     or safeGet("newcclosure") or function(f) return f end
+        setreadonly     = setreadonly     or safeGet("setreadonly") or function() end
+        if not hookmetamethod then error("hookmetamethod missing in this executor env") end
+        if not getrawmetatable then error("getrawmetatable missing in this executor env") end
         local mt = getrawmetatable(game)
-        setreadonly(mt, false)
+        if not mt then error("getrawmetatable(game) returned nil") end
+        pcall(setreadonly, mt, false)
         local oldNamecall = mt.__namecall
+        if not oldNamecall then error("mt.__namecall missing — game metatable unsupported") end
         mt.__namecall = newcclosure(function(self, ...)
             if checkcaller() then return oldNamecall(self, ...) end
             if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
@@ -1629,6 +1874,14 @@ local function installNamecallHook()
                         if S.MagicBullet.Enabled and S.MagicBullet.Mode == "Arc" then
                             hitPos = hitPos + Vector3.new(0, 2, 0)
                         end
+                        -- Origin override: when Ghost Desync's "use camera position for shots" is on,
+                        -- replace any origin-like Vector3/CFrame with the camera position so bullets
+                        -- fly from the player's eye instead of the frozen body.
+                        local camPosOverride = nil
+                        if S.Desync and S.Desync.UseCamForShots then
+                            local cam = GetCamera()
+                            if cam then camPosOverride = cam.CFrame.Position end
+                        end
                         for i = 1, args.n do
                             local a = args[i]
                             if typeof(a) == "Vector3" then
@@ -1645,6 +1898,10 @@ local function installNamecallHook()
                                 return
                             end
                         end
+                        -- (camPosOverride is reserved for engine-specific shot signatures that
+                        --  pass an origin Vector3 before the hit Vector3; we leave it unused for AUTO mode
+                        --  since AUTO replaces the first compatible arg.)
+                        if camPosOverride then end
                     end)
                     if override then return table.unpack(override) end
                 end
@@ -1672,7 +1929,7 @@ local function installNamecallHook()
         silentHookInstalled = true
     end)
     if not ok then
-        notify("Hook", "Namecall hook install failed", C.Danger)
+        notify("Hook", "install failed: " .. tostring(err), C.Danger, 6)
         return false
     end
     return true
@@ -1681,8 +1938,10 @@ end
 -- Mouse.Hit __index hook (lazy)
 local function installMouseHitHook()
     if mouseHitHookInstalled then return true end
-    if not hookmetamethod then return false end
-    local ok = pcall(function()
+    local ok, err = pcall(function()
+        hookmetamethod = hookmetamethod or safeGet("hookmetamethod")
+        newcclosure    = newcclosure    or safeGet("newcclosure") or function(f) return f end
+        if not hookmetamethod then error("hookmetamethod missing in this executor env") end
         local oldIndex
         oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
             if checkcaller() then return oldIndex(self, key) end
@@ -1713,7 +1972,7 @@ local function installMouseHitHook()
         mouseHitHookInstalled = true
     end)
     if not ok then
-        notify("Hook", "Mouse __index install failed", C.Danger)
+        notify("Hook", "Mouse __index install failed: " .. tostring(err), C.Danger, 6)
         return false
     end
     return true
@@ -1723,8 +1982,11 @@ end
 local fpoiHooked = false
 local function installFpoiHook()
     if fpoiHooked then return true end
-    if not hookfunction then return false end
-    local ok = pcall(function()
+    local ok, err = pcall(function()
+        hookfunction = hookfunction or safeGet("hookfunction")
+        newcclosure  = newcclosure  or safeGet("newcclosure") or function(f) return f end
+        if not hookfunction then error("hookfunction missing in this executor env") end
+        if not Workspace.FindPartOnRayWithIgnoreList then error("Workspace.FindPartOnRayWithIgnoreList missing — legacy raycast API unavailable") end
         local old
         old = hookfunction(Workspace.FindPartOnRayWithIgnoreList, newcclosure(function(self, ray, ignore, ...)
             if checkcaller() and not S.SilentAim.Enabled then return old(self, ray, ignore, ...) end
@@ -1738,15 +2000,21 @@ local function installFpoiHook()
         end))
         fpoiHooked = true
     end)
-    return ok
+    if not ok then
+        notify("Hook", "FindPart hook install failed: " .. tostring(err), C.Danger, 6)
+        return false
+    end
+    return true
 end
 
 -- Perms spoofer namecall (lazy)
 local permsHookInstalled = false
 local function installPermsHook()
     if permsHookInstalled then return true end
-    if not hookmetamethod then return false end
-    local ok = pcall(function()
+    local ok, err = pcall(function()
+        hookmetamethod = hookmetamethod or safeGet("hookmetamethod")
+        newcclosure    = newcclosure    or safeGet("newcclosure") or function(f) return f end
+        if not hookmetamethod then error("hookmetamethod missing in this executor env") end
         local oldNc
         oldNc = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             if checkcaller() then return oldNc(self, ...) end
@@ -1791,7 +2059,11 @@ local function installPermsHook()
         end))
         permsHookInstalled = true
     end)
-    return ok
+    if not ok then
+        notify("Hook", "Perms hook install failed: " .. tostring(err), C.Danger, 6)
+        return false
+    end
+    return true
 end
 
 -- ESP v6
@@ -2250,6 +2522,44 @@ Engines.stopInfJump = function()
     if infJumpConn then infJumpConn:Disconnect(); infJumpConn = nil end
 end
 
+-- Ninja TP: teleport behind closest enemy every heartbeat while enabled
+Engines.startNinjaTP = function()
+    if S.Movement.NinjaTP.conn then return end
+    S.Movement.NinjaTP.conn = RunService.Heartbeat:Connect(function()
+        if not S.Movement.NinjaTP.Enabled then return end
+        local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local closest, closestDist = nil, math.huge
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP and p.Character then
+                local thrp = p.Character:FindFirstChild("HumanoidRootPart")
+                local thum = p.Character:FindFirstChildOfClass("Humanoid")
+                if thrp and thum and thum.Health > 0 then
+                    if S.Movement.NinjaTP.TeamCheck and p.Team and p.Team == LP.Team then
+                        -- skip teammate
+                    else
+                        local d = (thrp.Position - hrp.Position).Magnitude
+                        if d < closestDist then closest, closestDist = thrp, d end
+                    end
+                end
+            end
+        end
+        if closest then
+            local dist = S.Movement.NinjaTP.StickDistance or 2.5
+            local back = closest.CFrame * CFrame.new(0, 0, dist)
+            if S.Movement.NinjaTP.FaceTarget then
+                pcall(function() hrp.CFrame = CFrame.new(back.Position, closest.Position) end)
+            else
+                pcall(function() hrp.CFrame = CFrame.new(back.Position) end)
+            end
+        end
+    end)
+end
+
+Engines.stopNinjaTP = function()
+    if S.Movement.NinjaTP.conn then S.Movement.NinjaTP.conn:Disconnect(); S.Movement.NinjaTP.conn = nil end
+end
+
 -- Spinbot
 local spinConn
 Engines.startSpinbot = function()
@@ -2346,170 +2656,65 @@ Engines.stopAntiVoid = function()
     if antiVoidConn then antiVoidConn:Disconnect(); antiVoidConn = nil end
 end
 
--- Desync
-local desyncConn = nil
-local fakeCharModel = nil
-local function buildFakeChar()
-    if fakeCharModel then pcall(function() fakeCharModel:Destroy() end) end
-    local ch = LP.Character
-    if not ch then return end
-    fakeCharModel = Instance.new("Model")
-    fakeCharModel.Name = "Freezer_Desync"
-    for _, p in ipairs(ch:GetChildren()) do
-        if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
-            pcall(function()
-                local c = p:Clone()
-                c.CanCollide = false
-                c.Anchored = true
-                c.Transparency = math.max(p.Transparency, 0.5)
-                c.Parent = fakeCharModel
+-- Ghost Desync (real position freeze)
+-- When engaged: server-replicated HRP stays at frozenCFrame so enemies shoot at body,
+-- while LO can move the camera (optionally free-cam) and shoot from elsewhere.
+Engines.startDesync = function()
+    if S.Desync.engaged then return end
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then notify("Desync", "No HumanoidRootPart", C.Danger); return end
+    S.Desync.engaged = true
+    S.Desync.frozenCFrame = hrp.CFrame
+    S.Desync.LastEngagedAt = tick()
+
+    S.Desync.freezeConn = RunService.Heartbeat:Connect(function()
+        if not S.Desync.engaged then return end
+        local h2 = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if h2 then
+            pcall(function() h2.CFrame = S.Desync.frozenCFrame end)
+            pcall(function() h2.AssemblyLinearVelocity = Vector3.zero end)
+            pcall(function() h2.AssemblyAngularVelocity = Vector3.zero end)
+        end
+    end)
+
+    if S.Desync.FreeCam then
+        local cam = GetCamera()
+        if cam then
+            S.Desync.origCameraType = cam.CameraType
+            pcall(function() cam.CameraType = Enum.CameraType.Scriptable end)
+            S.Desync.camPos = cam.CFrame.Position
+            S.Desync.camConn = RunService.RenderStepped:Connect(function(dt)
+                if not S.Desync.engaged then return end
+                local c = GetCamera()
+                if not c then return end
+                local move = Vector3.zero
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + c.CFrame.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - c.CFrame.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - c.CFrame.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + c.CFrame.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0, 1, 0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move = move - Vector3.new(0, 1, 0) end
+                S.Desync.camPos = S.Desync.camPos + move * (S.Desync.FreeCamSpeed or 60) * dt
+                pcall(function() c.CFrame = CFrame.new(S.Desync.camPos, S.Desync.camPos + c.CFrame.LookVector) end)
             end)
         end
     end
-    fakeCharModel.Parent = Workspace
-end
-local function destroyFakeChar()
-    if fakeCharModel then pcall(function() fakeCharModel:Destroy() end); fakeCharModel = nil end
+
+    notify("Desync", "Body frozen at current position. You can move freely.", C.Success, 4)
 end
 
-local function desyncOffset()
-    local dir = S.Desync.Direction
-    local cam = GetCamera()
-    local fwd = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
-    local right = cam and cam.CFrame.RightVector or Vector3.new(1, 0, 0)
-    if dir == "Forward" then return fwd * S.Desync.Offset
-    elseif dir == "Backward" then return -fwd * S.Desync.Offset
-    elseif dir == "Left" then return -right * S.Desync.Offset
-    elseif dir == "Right" then return right * S.Desync.Offset
-    elseif dir == "Up" then return Vector3.new(0, S.Desync.Offset, 0)
-    elseif dir == "Down" then return Vector3.new(0, -S.Desync.Offset, 0)
-    elseif dir == "NE" then return (fwd + right).Unit * S.Desync.Offset
-    elseif dir == "SW" then return (-fwd - right).Unit * S.Desync.Offset
-    end
-    return Vector3.zero
-end
-
-local function shouldDesyncEngage()
-    if not S.Desync.AutoEngage then
-        return getKeyHeld(S.Desync.TriggerKey)
-    end
-    local myHRP = getHRP(LP)
-    if not myHRP then return false end
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LP and (not plr.Team or plr.Team ~= LP.Team) then
-            local ch = plr.Character
-            local head = ch and ch:FindFirstChild("Head")
-            if head then
-                local dir = (myHRP.Position - head.Position)
-                local look = ch:FindFirstChild("HumanoidRootPart")
-                if look then
-                    local fwd = look.CFrame.LookVector
-                    local angle = math.deg(math.acos(math.clamp(fwd:Dot(dir.Unit), -1, 1)))
-                    if angle < 30 then return true end
-                end
-            end
-        end
-    end
-    return false
-end
-
--- Ghost server-position indicator
-local ghostBb = nil
-local ghostPart = nil
-local function ensureGhost()
-    if ghostPart then return end
-    pcall(function()
-        ghostPart = Instance.new("Part")
-        ghostPart.Name = "FREEZER_Ghost"
-        ghostPart.Anchored = true
-        ghostPart.CanCollide = false
-        ghostPart.Size = Vector3.new(2, 5, 1)
-        ghostPart.Transparency = 0.4
-        ghostPart.Material = Enum.Material.ForceField
-        ghostPart.BrickColor = BrickColor.new("Magenta")
-        ghostPart.Parent = Workspace
-
-        ghostBb = Instance.new("BillboardGui")
-        ghostBb.AlwaysOnTop = true
-        ghostBb.Size = UDim2.new(0, 140, 0, 24)
-        ghostBb.StudsOffset = Vector3.new(0, 3, 0)
-        ghostBb.Adornee = ghostPart
-        ghostBb.Parent = ghostPart
-        local lbl = Instance.new("TextLabel")
-        lbl.BackgroundTransparency = 1
-        lbl.Text = "server position"
-        lbl.Font = Enum.Font.GothamBold
-        lbl.TextSize = 12
-        lbl.TextColor3 = Color3.fromRGB(255, 65, 180)
-        lbl.TextStrokeTransparency = 0.4
-        lbl.Size = UDim2.new(1, 0, 1, 0)
-        lbl.Parent = ghostBb
-    end)
-end
-local function destroyGhost()
-    if ghostBb then pcall(function() ghostBb:Destroy() end); ghostBb = nil end
-    if ghostPart then pcall(function() ghostPart:Destroy() end); ghostPart = nil end
-end
-
-Engines.startDesync = function()
-    if desyncConn then return end
-    local lastNotifyT = 0
-    desyncConn = RunService.Heartbeat:Connect(function()
-        local engage = shouldDesyncEngage()
-        local hrp = getHRP(LP)
-        if not hrp then return end
-        if (S.Desync.NetOwner or S.Desync.VelocitySlam) and engage then
-            local off = desyncOffset()
-            if off.Magnitude < 0.001 then off = Vector3.new(0, 0, S.Desync.Offset) end
-            if S.Desync.NetOwner then
-                -- Use PivotTo for games that block CFrame writes; fall back to CFrame
-                pcall(function()
-                    local newCF = hrp.CFrame + off
-                    local ok = pcall(function() hrp:PivotTo(newCF) end)
-                    if not ok then hrp.CFrame = newCF end
-                end)
-                -- Spawn ghost indicator at the server-perceived position (i.e. the offset)
-                ensureGhost()
-                if ghostPart then
-                    pcall(function() ghostPart.CFrame = CFrame.new(hrp.Position - off) end)
-                end
-            end
-            if S.Desync.VelocitySlam then
-                pcall(function() hrp.AssemblyLinearVelocity = off * 50 end)
-            end
-            -- Notify on engage (throttled to once per 1.5s)
-            if tick() - (S.Desync.LastEngagedAt or 0) > 1.5 then
-                S.Desync.LastEngagedAt = tick()
-                if tick() - lastNotifyT > 1.5 then
-                    lastNotifyT = tick()
-                    notify("Desync", string.format("active, offset=%d studs (%s)", S.Desync.Offset, S.Desync.Direction), C.Success, 2)
-                end
-            end
-        else
-            if ghostPart and not S.Desync.FakeChar then destroyGhost() end
-        end
-        if S.Desync.FakeChar and engage then
-            if not fakeCharModel then buildFakeChar() end
-            if fakeCharModel then
-                local off = desyncOffset()
-                for _, p in ipairs(fakeCharModel:GetChildren()) do
-                    if p:IsA("BasePart") then
-                        local orig = LP.Character and LP.Character:FindFirstChild(p.Name)
-                        if orig then
-                            pcall(function() p.CFrame = orig.CFrame + off end)
-                        end
-                    end
-                end
-            end
-        elseif fakeCharModel and not engage then
-            destroyFakeChar()
-        end
-    end)
-end
 Engines.stopDesync = function()
-    if desyncConn then desyncConn:Disconnect(); desyncConn = nil end
-    destroyFakeChar()
-    destroyGhost()
+    S.Desync.engaged = false
+    if S.Desync.freezeConn then S.Desync.freezeConn:Disconnect(); S.Desync.freezeConn = nil end
+    if S.Desync.camConn then S.Desync.camConn:Disconnect(); S.Desync.camConn = nil end
+    local cam = GetCamera()
+    if S.Desync.origCameraType and cam then
+        pcall(function() cam.CameraType = S.Desync.origCameraType end)
+        S.Desync.origCameraType = nil
+    end
+    S.Desync.frozenCFrame = nil
+    S.Desync.camPos = nil
 end
 
 -- Teleport
@@ -3020,6 +3225,17 @@ do
     Controls.Slider(c3, "Void threshold (Y)", -1000, 0, S.Movement.AntiVoidThreshold, 0, function(v) S.Movement.AntiVoidThreshold = v end)
     Controls.Keybind(c3, "Panic reset key", S.Movement.PanicResetKey, function(k) S.Movement.PanicResetKey = k end)
     registerKey("Panic reset", function() return S.Movement.PanicResetKey end, function(k) S.Movement.PanicResetKey = k end)
+
+    local cN = Controls.Card(p, "Ninja TP", "Stick behind closest enemy every Heartbeat.")
+    Controls.Toggle(cN, "Ninja TP enabled", S.Movement.NinjaTP.Enabled, function(v)
+        S.Movement.NinjaTP.Enabled = v
+        if v then Engines.startNinjaTP() else Engines.stopNinjaTP() end
+    end)
+    Controls.Slider(cN, "Stick distance", 1, 10, S.Movement.NinjaTP.StickDistance, 1, function(v) S.Movement.NinjaTP.StickDistance = v end)
+    Controls.Toggle(cN, "Face target", S.Movement.NinjaTP.FaceTarget, function(v) S.Movement.NinjaTP.FaceTarget = v end)
+    Controls.Toggle(cN, "Team check", S.Movement.NinjaTP.TeamCheck, function(v) S.Movement.NinjaTP.TeamCheck = v end)
+    Controls.Keybind(cN, "Activation key", S.Movement.NinjaTP.Key, function(k) S.Movement.NinjaTP.Key = k end)
+    registerKey("Ninja TP toggle", function() return S.Movement.NinjaTP.Key end, function(k) S.Movement.NinjaTP.Key = k end)
 end
 
 -- WORLD
@@ -3118,24 +3334,22 @@ end
 do
     addNav("Combat", "[K]")
     local p = addPage("Combat")
-    local cD = Controls.Card(p, "Desync", "NetOwner + VelocitySlam + FakeCharacter (stackable).")
-    Controls.Toggle(cD, "NetOwner", S.Desync.NetOwner, function(v)
-        S.Desync.NetOwner = v
-        if v or S.Desync.VelocitySlam or S.Desync.FakeChar then Engines.startDesync() else Engines.stopDesync() end
+    local cD = Controls.Card(p, "Ghost Desync", "Freezes your server-replicated body where you are. Enemies shoot your frozen body; you keep moving.")
+    Controls.Toggle(cD, "Enabled", S.Desync.Enabled, function(v)
+        S.Desync.Enabled = v
+        if v then Engines.startDesync() else Engines.stopDesync() end
     end)
-    Controls.Toggle(cD, "VelocitySlam", S.Desync.VelocitySlam, function(v)
-        S.Desync.VelocitySlam = v
-        if v or S.Desync.NetOwner or S.Desync.FakeChar then Engines.startDesync() else Engines.stopDesync() end
+    Controls.Toggle(cD, "FreeCam mode while desync", S.Desync.FreeCam, function(v)
+        S.Desync.FreeCam = v
+        if S.Desync.engaged then
+            Engines.stopDesync()
+            if S.Desync.Enabled then Engines.startDesync() end
+        end
     end)
-    Controls.Toggle(cD, "Fake character", S.Desync.FakeChar, function(v)
-        S.Desync.FakeChar = v
-        if v or S.Desync.NetOwner or S.Desync.VelocitySlam then Engines.startDesync() else Engines.stopDesync() end
-    end)
-    Controls.Slider(cD, "Offset", 0, 25, S.Desync.Offset, 0, function(v) S.Desync.Offset = v end)
-    Controls.Dropdown(cD, "Direction", { "Forward", "Backward", "Left", "Right", "Up", "Down", "NE", "SW" }, S.Desync.Direction, function(v) S.Desync.Direction = v end)
-    Controls.Toggle(cD, "Auto-engage on enemy aim", S.Desync.AutoEngage, function(v) S.Desync.AutoEngage = v end)
-    Controls.Keybind(cD, "Manual trigger key", S.Desync.TriggerKey, function(k) S.Desync.TriggerKey = k end)
-    registerKey("Desync trigger", function() return S.Desync.TriggerKey end, function(k) S.Desync.TriggerKey = k end)
+    Controls.Slider(cD, "FreeCam speed", 10, 200, S.Desync.FreeCamSpeed, 0, function(v) S.Desync.FreeCamSpeed = v end)
+    Controls.Toggle(cD, "Use camera position for shots", S.Desync.UseCamForShots, function(v) S.Desync.UseCamForShots = v end)
+    Controls.Keybind(cD, "Toggle trigger key", S.Desync.TriggerKey, function(k) S.Desync.TriggerKey = k end)
+    registerKey("Desync toggle", function() return S.Desync.TriggerKey end, function(k) S.Desync.TriggerKey = k end)
 
     local cH = Controls.Card(p, "Hitbox extender", "Resize enemy parts. Per-part toggles.")
     Controls.Toggle(cH, "Enabled", S.Hitbox.Enabled, function(v) S.Hitbox.Enabled = v end)
@@ -3514,6 +3728,15 @@ do
         refreshTaStatus()
     end)
 
+    new("TextLabel", {
+        BackgroundTransparency = 1,
+        Text = "CAGE is LOCAL ONLY — others do not see the cage. Use TRAP for a live-fire lock.",
+        Font = Enum.Font.Code, TextSize = 11,
+        TextColor3 = C.TextDim, TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true, AutomaticSize = Enum.AutomaticSize.Y,
+        Size = UDim2.new(1, 0, 0, 26), LayoutOrder = 49, Parent = cTA,
+    })
+
     Controls.Button(cTA, "CAGE", "secondary", function()
         local plr = getSelectedPlayer()
         if not plr then notify("Target", "No target selected", C.Danger); return end
@@ -3563,6 +3786,23 @@ do
         if cage then pcall(function() cage:Destroy() end); notify("UNCAGE", "Removed cage for " .. name, C.Success)
         else notify("UNCAGE", "No cage for " .. name, C.Warning) end
         refreshTaStatus()
+    end)
+
+    Controls.Button(cTA, "TRAP (lock aimbot + silent)", "danger", function()
+        local plr = getSelectedPlayer()
+        if not plr then notify("Target", "No target selected", C.Danger); return end
+        S.Aimbot.ForceTarget = plr
+        S.Aimbot.Enabled = true
+        S.SilentAim.Enabled = true
+        Engines.startAimbot()
+        if S.Aimbot.ShowFovCircle or S.SilentAim.ShowFovCircle then Engines.startFovCircle() end
+        installNamecallHook()
+        notify("TRAP", "Trap armed: aimbot+silent locked on " .. plr.Name, C.Success, 4)
+    end)
+
+    Controls.Button(cTA, "RELEASE trap", "secondary", function()
+        S.Aimbot.ForceTarget = nil
+        notify("TRAP", "Released. Aimbot resumes normal targeting.", C.Success, 3)
     end)
 
     Controls.Button(cTA, "Teleport TO", "primary", function()
@@ -3747,7 +3987,7 @@ do
         Controls.Keybind(c4, kbCopy.name, kbCopy.get(), function(k) kbCopy.set(k); saveConfig() end)
     end
 
-    local c5 = Controls.Card(p, "About", "FREEZER v6.0.0 â€” safe-init build, hooks lazy, all defaults off.")
+    local c5 = Controls.Card(p, "About", "FREEZER v6.2.0 - safe-init build, hooks lazy, all defaults off.")
 end
 
 -- Default page
@@ -3781,7 +4021,17 @@ track(UserInputService.InputBegan:Connect(function(input, gpe)
         S.Aimbot.Enabled = false; Engines.stopAimbot()
         S.SilentAim.Enabled = false
         S.MagicBullet.Enabled = false
+        S.Desync.Enabled = false; Engines.stopDesync()
+        S.Movement.NinjaTP.Enabled = false; Engines.stopNinjaTP()
         notify("Panic", "All combat disabled", C.Warning)
+    end
+    if key == S.Desync.TriggerKey then
+        S.Desync.Enabled = not S.Desync.Enabled
+        if S.Desync.Enabled then Engines.startDesync() else Engines.stopDesync() end
+    end
+    if key == S.Movement.NinjaTP.Key then
+        S.Movement.NinjaTP.Enabled = not S.Movement.NinjaTP.Enabled
+        if S.Movement.NinjaTP.Enabled then Engines.startNinjaTP() else Engines.stopNinjaTP() end
     end
     if key == S.Movement.TpForwardKey then
         local hrp = getHRP(LP)
@@ -3830,7 +4080,7 @@ track(Players.PlayerAdded:Connect(function() end))
 
 --[[ EXPOSE API + INIT ]]
 local API = {
-    Version = "6.0.0",
+    Version = "6.2.0",
     State = S,
     Notify = notify,
     Show = function() HubGui.Enabled = true end,
@@ -3846,6 +4096,7 @@ local API = {
         Engines.stopTriggerBot(); Engines.stopDesync(); Engines.stopSpinbot(); Engines.stopMoonJump()
         Engines.stopWallClimb(); Engines.stopAntiFling(); Engines.stopAntiVoid()
         Engines.stopItemEsp(); Engines.stopChatSpy(); Engines.stopCrosshair(); Engines.stopNoFog()
+        Engines.stopNinjaTP()
         pcall(function() HubGui:Destroy() end)
         pcall(function() NotifyGui:Destroy() end)
         pcall(function() if FallbackLayer then FallbackLayer:Destroy() end end)
