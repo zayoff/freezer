@@ -1707,11 +1707,12 @@ if mt then
             -- Self must be an Instance for any of our logic to run safely.
             if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
 
+            -- Capture varargs OUTSIDE the pcall (nested function has no '...').
+            local args = table.pack(...)
             local override, overrideValue
             local ok = pcall(function()
                 local method = getnamecallmethod and getnamecallmethod() or ""
                 if method == "" then return end
-                local args = { ... }
 
                 -- FireServer / InvokeServer: Silent Aim + Magic Bullet
                 if method == "FireServer" or method == "InvokeServer" then
@@ -1752,12 +1753,12 @@ if mt then
                                 if typeof(a) == "Vector3" then
                                     args[i] = hitPos
                                     override = true
-                                    overrideValue = { oldNamecall(self, table.unpack(args)) }
+                                    overrideValue = { oldNamecall(self, table.unpack(args, 1, args.n)) }
                                     return
                                 elseif typeof(a) == "CFrame" then
                                     args[i] = CFrame.new(hitPos)
                                     override = true
-                                    overrideValue = { oldNamecall(self, table.unpack(args)) }
+                                    overrideValue = { oldNamecall(self, table.unpack(args, 1, args.n)) }
                                     return
                                 end
                             end
@@ -1786,7 +1787,7 @@ if mt then
 
                 -- Spoof: gamepass / asset / badge / group rank
                 if State.Spoof.Gamepass.Enabled and method == "UserOwnsGamePassAsync" then
-                    local _, gpid = ...
+                    local gpid = args[2]
                     local wl = State.Spoof.Gamepass.Whitelist or ""
                     if wl == "" then
                         override = true; overrideValue = { true }; return
