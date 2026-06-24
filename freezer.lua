@@ -1211,9 +1211,15 @@ local API = {
 pcall(function() getgenv().FREEZER = API end)
 
 loadConfig()
-showSplash(function()
-    HubGui.Enabled = true
-    notify("FREEZER", "Ready. Press " .. S.Master.ToggleKey .. " to hide.", C.Success, 4)
+
+-- Show hub IMMEDIATELY so it is ready when splash fades.
+-- Splash has DisplayOrder 999999, hub has 50000, so splash overlays cleanly.
+HubGui.Enabled = true
+
+task.spawn(function()
+    showSplash(function()
+        notify("FREEZER", "Ready. Press " .. S.Master.ToggleKey .. " to hide.", C.Success, 4)
+    end)
 end)
 
 return API
