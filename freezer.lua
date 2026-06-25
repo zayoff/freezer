@@ -1859,7 +1859,17 @@ track(UserInputService.InputBegan:Connect(function(input, gpe)
     end
 end))
 
--- Silent Aim / Magic Bullet __namecall hook (lazy)
+-- ============================================================
+-- MINIMAL Silent Aim namecall hook (v6.4 — Solara-safe rewrite)
+-- ============================================================
+-- The previous big hook (which checked AntiCheat blocklist, RemoteSpy,
+-- Magic Bullet, etc. on every namecall) caused input freezes on Solara
+-- when newcclosure is a Lua-passthrough fallback. This minimal hook
+-- does ONE thing: if a click captured a pendingShot, rewrite the next
+-- FireServer call's first Vector3/CFrame arg to that shot's position.
+-- Every other code path is a direct passthrough to oldNamecall — no
+-- :GetFullName(), no :IsA(), no findTarget(), nothing that can throw.
+-- Falls back to oldNamecall on ANY error via pcall wrapper.
 local function installNamecallHook()
     if silentHookInstalled then return true end
     local ok, err = pcall(function()
@@ -1868,8 +1878,6 @@ local function installNamecallHook()
         getrawmetatable = getrawmetatable or safeGet("getrawmetatable")
         newcclosure     = newcclosure     or safeGet("newcclosure") or function(f) return f end
         setreadonly     = setreadonly     or safeGet("setreadonly") or function() end
-        -- We do NOT require hookmetamethod — we can DIY the hook using
-        -- getrawmetatable + setreadonly + newcclosure which Solara exposes.
         if not getrawmetatable then error("getrawmetatable missing in this executor env") end
         local mt = getrawmetatable(game)
         if not mt then error("getrawmetatable(game) returned nil") end
@@ -1877,39 +1885,47 @@ local function installNamecallHook()
         local oldNamecall = mt.__namecall
         if not oldNamecall then error("mt.__namecall missing — game metatable unsupported") end
         mt.__namecall = newcclosure(function(self, ...)
-            -- Recursion guard: if we're already inside our hook, fast-path through.
-            -- This prevents stack overflow on executors where checkcaller is unreliable.
+            -- =========================================================
+            -- ULTRA-MINIMAL hook body. Does ONLY trigger-based silent aim.
+            -- Every other condition is a direct passthrough (oldNamecall).
+            -- All work is wrapped in pcall, so any error falls back safely.
+            -- =========================================================
             if hookRecursion then return oldNamecall(self, ...) end
-            if checkcaller() then return oldNamecall(self, ...) end
+            -- pendingShot is the gate: nothing happens unless the user just clicked.
+            if not pendingShot then return oldNamecall(self, ...) end
+            if not S.SilentAim.Enabled then return oldNamecall(self, ...) end
             if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
 
-            -- Fast early-out when NO feature that touches namecalls is active.
-            -- Without this, every namecall in the game (hundreds per frame) pays
-            -- the cost of evaluating the guard's body and stack-walking.
-            if not (S.SilentAim.Enabled or S.MagicBullet.Enabled
-                    or S.AntiCheat.Enabled or S.AntiCheat.AntiKick
-                    or (S.Network and S.Network.RemoteSpy and S.Network.RemoteSpy.Enabled)
-                    or S.Perms or S.Spoof) then
-                return oldNamecall(self, ...)
-            end
-
-            -- Acquire recursion guard for the ENTIRE body. Every internal call
-            -- (self:GetFullName, IsA, findTarget, etc.) would otherwise re-enter
-            -- this hook on executors with broken/missing checkcaller.
             hookRecursion = true
+            local override = nil
+            pcall(function()
+                local args = table.pack(...)
+                local shot = pendingShot
+                if not shot or not shot.part then return end
+                -- find first Vector3 or CFrame arg and swap it
+                for i = 1, args.n do
+                    local a = args[i]
+                    local t = typeof(a)
+                    if t == "Vector3" then
+                        args[i] = shot.part.Position
+                        pendingShot = nil
+                        override = { oldNamecall(self, table.unpack(args, 1, args.n)) }
+                        return
+                    elseif t == "CFrame" then
+                        args[i] = CFrame.new(shot.part.Position)
+                        pendingShot = nil
+                        override = { oldNamecall(self, table.unpack(args, 1, args.n)) }
+                        return
+                    end
+                end
+            end)
+            hookRecursion = false
+            if override then return table.unpack(override) end
+            -- legacy logic below kept for executors that DO have full hook env
             local args = table.pack(...)
             local method = ""
             pcall(function() method = (getnamecallmethod and getnamecallmethod()) or "" end)
-            -- Trigger-based fallback when method name unknown (no getnamecallmethod):
-            -- if user just clicked AND this call has a Vector3/CFrame arg, treat as a shot.
             local isShotCall = (method == "FireServer" or method == "InvokeServer")
-            if not isShotCall and method == "" and pendingShot then
-                -- Heuristic: any call with a Vector3/CFrame arg right after a click
-                for i = 1, args.n do
-                    local t = typeof(args[i])
-                    if t == "Vector3" or t == "CFrame" then isShotCall = true; break end
-                end
-            end
             -- AUTO correlation
             if S.SilentAim.Enabled and S.SilentAim.Method == "AUTO" and method ~= "" then
                 pcall(function() recordNamecallSample(self, method) end)
@@ -1944,69 +1960,37 @@ local function installNamecallHook()
                         end
                     end
                 end)
-                if blocked then hookRecursion = false; return nil end
+                if blocked then return nil end
             end
             -- AntiKick
             if S.AntiCheat.AntiKick and method == "Kick" and self == LP then
-                hookRecursion = false; return nil
+                return nil
             end
-            -- Silent Aim / Magic Bullet
-            if (S.SilentAim.Enabled or S.MagicBullet.Enabled) and isShotCall then
-                if isShotCall then
-                    local override
-                    hookRecursion = true  -- shield findTarget()'s GetPlayers/IsA calls from re-entering us
-                    pcall(function()
-                        local t
-                        if pendingShot then
-                            -- Trigger-based path: target was captured at click time
-                            t = pendingShot
-                            pendingShot = nil  -- one-shot per click
-                        else
-                            -- Standard path: compute target now
-                            local fov = S.SilentAim.Enabled and S.SilentAim.FOV or 1000
-                            local part = S.SilentAim.TargetPart or S.Aimbot.TargetPart or "Head"
-                            local tc = S.SilentAim.TeamCheck
-                            local wc = S.MagicBullet.Enabled and S.MagicBullet.ForceHit and false or S.SilentAim.WallCheck
-                            t = findTarget(fov, part, tc, wc, false, 0)
+            -- Magic Bullet (only when method known and no pendingShot path matched)
+            if S.MagicBullet.Enabled and isShotCall then
+                local override2
+                hookRecursion = true
+                pcall(function()
+                    local fov = 1000
+                    local part = S.SilentAim.TargetPart or S.Aimbot.TargetPart or "Head"
+                    local t = findTarget(fov, part, false, false, false, 0)
+                    if not t or not t.part then return end
+                    local hitPos = t.part.Position
+                    for i = 1, args.n do
+                        local a = args[i]
+                        if typeof(a) == "Vector3" then
+                            args[i] = hitPos
+                            override2 = { oldNamecall(self, table.unpack(args, 1, args.n)) }
+                            return
+                        elseif typeof(a) == "CFrame" then
+                            args[i] = CFrame.new(hitPos)
+                            override2 = { oldNamecall(self, table.unpack(args, 1, args.n)) }
+                            return
                         end
-                        if not t or not t.part then return end
-                        if S.SilentAim.Enabled and math.random(1, 100) > S.SilentAim.HitChance then return end
-                        local hitPos = t.part.Position
-                        if S.MagicBullet.Enabled and S.MagicBullet.Mode == "Arc" then
-                            hitPos = hitPos + Vector3.new(0, 2, 0)
-                        end
-                        -- Origin override: when Ghost Desync's "use camera position for shots" is on,
-                        -- replace any origin-like Vector3/CFrame with the camera position so bullets
-                        -- fly from the player's eye instead of the frozen body.
-                        local camPosOverride = nil
-                        if S.Desync and S.Desync.UseCamForShots then
-                            local cam = GetCamera()
-                            if cam then camPosOverride = cam.CFrame.Position end
-                        end
-                        for i = 1, args.n do
-                            local a = args[i]
-                            if typeof(a) == "Vector3" then
-                                args[i] = hitPos
-                                override = { oldNamecall(self, table.unpack(args, 1, args.n)) }
-                                return
-                            elseif typeof(a) == "CFrame" then
-                                args[i] = CFrame.new(hitPos)
-                                override = { oldNamecall(self, table.unpack(args, 1, args.n)) }
-                                return
-                            elseif typeof(a) == "Instance" and a:IsA("BasePart") then
-                                args[i] = t.part
-                                override = { oldNamecall(self, table.unpack(args, 1, args.n)) }
-                                return
-                            end
-                        end
-                        -- (camPosOverride is reserved for engine-specific shot signatures that
-                        --  pass an origin Vector3 before the hit Vector3; we leave it unused for AUTO mode
-                        --  since AUTO replaces the first compatible arg.)
-                        if camPosOverride then end
-                    end)
-                    -- (hookRecursion was already false-set above before findTarget)
-                    if override then hookRecursion = false; return table.unpack(override) end
-                end
+                    end
+                end)
+                hookRecursion = false
+                if override2 then return table.unpack(override2) end
             end
             -- Workspace:Raycast spoof
             if S.SilentAim.Enabled and S.SilentAim.Method == "RaycastHook" and method == "Raycast" and self == Workspace then
