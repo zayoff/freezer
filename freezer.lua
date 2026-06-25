@@ -1884,15 +1884,20 @@ local function installNamecallHook()
         pcall(setreadonly, mt, false)
         local oldNamecall = mt.__namecall
         if not oldNamecall then error("mt.__namecall missing — game metatable unsupported") end
-        mt.__namecall = newcclosure(function(self, ...)
+        -- IMPORTANT: do NOT wrap in newcclosure. On Solara newcclosure marshalls
+        -- every namecall through a Lua-to-C bridge costing ~100us/call which at
+        -- 10k namecalls/frame drops the game to 1 FPS. Plain Lua __namecall is
+        -- accepted by Roblox and ~30x faster per call.
+        mt.__namecall = function(self, ...)
             -- =========================================================
             -- ULTRA-MINIMAL hook body. Does ONLY trigger-based silent aim.
             -- Every other condition is a direct passthrough (oldNamecall).
             -- All work is wrapped in pcall, so any error falls back safely.
             -- =========================================================
-            if Engines._hookRecursion then return oldNamecall(self, ...) end
-            -- Engines._pendingShot is the gate: nothing happens unless the user just clicked.
+            -- Engines._pendingShot is the PRIMARY gate (cheapest single boolean).
+            -- 99.99% of calls bail here with zero further work.
             if not Engines._pendingShot then return oldNamecall(self, ...) end
+            if Engines._hookRecursion then return oldNamecall(self, ...) end
             if not S.SilentAim.Enabled then return oldNamecall(self, ...) end
             if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
 
@@ -2012,7 +2017,9 @@ local function installNamecallHook()
             end
             Engines._hookRecursion = false  -- release guard before fallback
             return oldNamecall(self, ...)
-        end)
+        end
+        -- (no newcclosure wrap — see comment at install site)
+        pcall(setreadonly, mt, true)
         silentHookInstalled = true
     end)
     if not ok then
