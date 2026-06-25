@@ -1836,12 +1836,13 @@ end
 local pushRemote
 
 -- Trigger-based fallback: when the user clicks MouseButton1, we mark a
--- pendingShot. The namecall hook below then modifies the FIRST FireServer-ish
+-- Engines._pendingShot. The namecall hook below then modifies the FIRST FireServer-ish
 -- call with a Vector3/CFrame arg, regardless of whether we know the method name.
 -- This lets Silent Aim work even on executors that do NOT expose
 -- getnamecallmethod (Solara is the prime example).
-local pendingShot = nil
-local hookRecursion = false
+-- Use Engines table fields (zero extra locals, avoid Luau 200-local limit)
+Engines._pendingShot = nil
+Engines._hookRecursion = false
 track(UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 and S.SilentAim.Enabled then
@@ -1849,12 +1850,11 @@ track(UserInputService.InputBegan:Connect(function(input, gpe)
         local part = S.SilentAim.TargetPart or "Head"
         local tc = S.SilentAim.TeamCheck
         local wc = S.SilentAim.WallCheck
-        local t = pcall(findTarget, fov, part, tc, wc, false, 0)
         local target
         pcall(function() target = findTarget(fov, part, tc, wc, false, 0) end)
         if target and target.part then
-            pendingShot = target
-            task.delay(0.5, function() pendingShot = nil end)  -- expire after 500ms
+            Engines._pendingShot = target
+            task.delay(0.5, function() Engines._pendingShot = nil end)
         end
     end
 end))
@@ -1865,7 +1865,7 @@ end))
 -- The previous big hook (which checked AntiCheat blocklist, RemoteSpy,
 -- Magic Bullet, etc. on every namecall) caused input freezes on Solara
 -- when newcclosure is a Lua-passthrough fallback. This minimal hook
--- does ONE thing: if a click captured a pendingShot, rewrite the next
+-- does ONE thing: if a click captured a Engines._pendingShot, rewrite the next
 -- FireServer call's first Vector3/CFrame arg to that shot's position.
 -- Every other code path is a direct passthrough to oldNamecall — no
 -- :GetFullName(), no :IsA(), no findTarget(), nothing that can throw.
@@ -1890,17 +1890,17 @@ local function installNamecallHook()
             -- Every other condition is a direct passthrough (oldNamecall).
             -- All work is wrapped in pcall, so any error falls back safely.
             -- =========================================================
-            if hookRecursion then return oldNamecall(self, ...) end
-            -- pendingShot is the gate: nothing happens unless the user just clicked.
-            if not pendingShot then return oldNamecall(self, ...) end
+            if Engines._hookRecursion then return oldNamecall(self, ...) end
+            -- Engines._pendingShot is the gate: nothing happens unless the user just clicked.
+            if not Engines._pendingShot then return oldNamecall(self, ...) end
             if not S.SilentAim.Enabled then return oldNamecall(self, ...) end
             if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
 
-            hookRecursion = true
+            Engines._hookRecursion = true
             local override = nil
             pcall(function()
                 local args = table.pack(...)
-                local shot = pendingShot
+                local shot = Engines._pendingShot
                 if not shot or not shot.part then return end
                 -- find first Vector3 or CFrame arg and swap it
                 for i = 1, args.n do
@@ -1908,18 +1908,18 @@ local function installNamecallHook()
                     local t = typeof(a)
                     if t == "Vector3" then
                         args[i] = shot.part.Position
-                        pendingShot = nil
+                        Engines._pendingShot = nil
                         override = { oldNamecall(self, table.unpack(args, 1, args.n)) }
                         return
                     elseif t == "CFrame" then
                         args[i] = CFrame.new(shot.part.Position)
-                        pendingShot = nil
+                        Engines._pendingShot = nil
                         override = { oldNamecall(self, table.unpack(args, 1, args.n)) }
                         return
                     end
                 end
             end)
-            hookRecursion = false
+            Engines._hookRecursion = false
             if override then return table.unpack(override) end
             -- legacy logic below kept for executors that DO have full hook env
             local args = table.pack(...)
@@ -1966,10 +1966,10 @@ local function installNamecallHook()
             if S.AntiCheat.AntiKick and method == "Kick" and self == LP then
                 return nil
             end
-            -- Magic Bullet (only when method known and no pendingShot path matched)
+            -- Magic Bullet (only when method known and no Engines._pendingShot path matched)
             if S.MagicBullet.Enabled and isShotCall then
                 local override2
-                hookRecursion = true
+                Engines._hookRecursion = true
                 pcall(function()
                     local fov = 1000
                     local part = S.SilentAim.TargetPart or S.Aimbot.TargetPart or "Head"
@@ -1989,7 +1989,7 @@ local function installNamecallHook()
                         end
                     end
                 end)
-                hookRecursion = false
+                Engines._hookRecursion = false
                 if override2 then return table.unpack(override2) end
             end
             -- Workspace:Raycast spoof
@@ -2008,9 +2008,9 @@ local function installNamecallHook()
                     }, { __index = function(_, k) return nil end })
                     override = { proxy }
                 end)
-                if override then hookRecursion = false; return table.unpack(override) end
+                if override then Engines._hookRecursion = false; return table.unpack(override) end
             end
-            hookRecursion = false  -- release guard before fallback
+            Engines._hookRecursion = false  -- release guard before fallback
             return oldNamecall(self, ...)
         end)
         silentHookInstalled = true
