@@ -1882,6 +1882,21 @@ local function installNamecallHook()
             if hookRecursion then return oldNamecall(self, ...) end
             if checkcaller() then return oldNamecall(self, ...) end
             if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
+
+            -- Fast early-out when NO feature that touches namecalls is active.
+            -- Without this, every namecall in the game (hundreds per frame) pays
+            -- the cost of evaluating the guard's body and stack-walking.
+            if not (S.SilentAim.Enabled or S.MagicBullet.Enabled
+                    or S.AntiCheat.Enabled or S.AntiCheat.AntiKick
+                    or (S.Network and S.Network.RemoteSpy and S.Network.RemoteSpy.Enabled)
+                    or S.Perms or S.Spoof) then
+                return oldNamecall(self, ...)
+            end
+
+            -- Acquire recursion guard for the ENTIRE body. Every internal call
+            -- (self:GetFullName, IsA, findTarget, etc.) would otherwise re-enter
+            -- this hook on executors with broken/missing checkcaller.
+            hookRecursion = true
             local args = table.pack(...)
             local method = ""
             pcall(function() method = (getnamecallmethod and getnamecallmethod()) or "" end)
@@ -1929,11 +1944,11 @@ local function installNamecallHook()
                         end
                     end
                 end)
-                if blocked then return nil end
+                if blocked then hookRecursion = false; return nil end
             end
             -- AntiKick
             if S.AntiCheat.AntiKick and method == "Kick" and self == LP then
-                return nil
+                hookRecursion = false; return nil
             end
             -- Silent Aim / Magic Bullet
             if (S.SilentAim.Enabled or S.MagicBullet.Enabled) and isShotCall then
@@ -1989,8 +2004,8 @@ local function installNamecallHook()
                         --  since AUTO replaces the first compatible arg.)
                         if camPosOverride then end
                     end)
-                    hookRecursion = false  -- release the guard
-                    if override then return table.unpack(override) end
+                    -- (hookRecursion was already false-set above before findTarget)
+                    if override then hookRecursion = false; return table.unpack(override) end
                 end
             end
             -- Workspace:Raycast spoof
@@ -2009,8 +2024,9 @@ local function installNamecallHook()
                     }, { __index = function(_, k) return nil end })
                     override = { proxy }
                 end)
-                if override then return table.unpack(override) end
+                if override then hookRecursion = false; return table.unpack(override) end
             end
+            hookRecursion = false  -- release guard before fallback
             return oldNamecall(self, ...)
         end)
         silentHookInstalled = true
