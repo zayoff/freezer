@@ -1835,6 +1835,30 @@ end
 -- Forward declarations for cross-section subscribers
 local pushRemote
 
+-- Trigger-based fallback: when the user clicks MouseButton1, we mark a
+-- pendingShot. The namecall hook below then modifies the FIRST FireServer-ish
+-- call with a Vector3/CFrame arg, regardless of whether we know the method name.
+-- This lets Silent Aim work even on executors that do NOT expose
+-- getnamecallmethod (Solara is the prime example).
+local pendingShot = nil
+local hookRecursion = false
+track(UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 and S.SilentAim.Enabled then
+        local fov = S.SilentAim.FOV or 200
+        local part = S.SilentAim.TargetPart or "Head"
+        local tc = S.SilentAim.TeamCheck
+        local wc = S.SilentAim.WallCheck
+        local t = pcall(findTarget, fov, part, tc, wc, false, 0)
+        local target
+        pcall(function() target = findTarget(fov, part, tc, wc, false, 0) end)
+        if target and target.part then
+            pendingShot = target
+            task.delay(0.5, function() pendingShot = nil end)  -- expire after 500ms
+        end
+    end
+end))
+
 -- Silent Aim / Magic Bullet __namecall hook (lazy)
 local function installNamecallHook()
     if silentHookInstalled then return true end
@@ -1844,7 +1868,8 @@ local function installNamecallHook()
         getrawmetatable = getrawmetatable or safeGet("getrawmetatable")
         newcclosure     = newcclosure     or safeGet("newcclosure") or function(f) return f end
         setreadonly     = setreadonly     or safeGet("setreadonly") or function() end
-        if not hookmetamethod then error("hookmetamethod missing in this executor env") end
+        -- We do NOT require hookmetamethod — we can DIY the hook using
+        -- getrawmetatable + setreadonly + newcclosure which Solara exposes.
         if not getrawmetatable then error("getrawmetatable missing in this executor env") end
         local mt = getrawmetatable(game)
         if not mt then error("getrawmetatable(game) returned nil") end
@@ -1852,11 +1877,24 @@ local function installNamecallHook()
         local oldNamecall = mt.__namecall
         if not oldNamecall then error("mt.__namecall missing — game metatable unsupported") end
         mt.__namecall = newcclosure(function(self, ...)
+            -- Recursion guard: if we're already inside our hook, fast-path through.
+            -- This prevents stack overflow on executors where checkcaller is unreliable.
+            if hookRecursion then return oldNamecall(self, ...) end
             if checkcaller() then return oldNamecall(self, ...) end
             if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
             local args = table.pack(...)
             local method = ""
             pcall(function() method = (getnamecallmethod and getnamecallmethod()) or "" end)
+            -- Trigger-based fallback when method name unknown (no getnamecallmethod):
+            -- if user just clicked AND this call has a Vector3/CFrame arg, treat as a shot.
+            local isShotCall = (method == "FireServer" or method == "InvokeServer")
+            if not isShotCall and method == "" and pendingShot then
+                -- Heuristic: any call with a Vector3/CFrame arg right after a click
+                for i = 1, args.n do
+                    local t = typeof(args[i])
+                    if t == "Vector3" or t == "CFrame" then isShotCall = true; break end
+                end
+            end
             -- AUTO correlation
             if S.SilentAim.Enabled and S.SilentAim.Method == "AUTO" and method ~= "" then
                 pcall(function() recordNamecallSample(self, method) end)
@@ -1898,15 +1936,24 @@ local function installNamecallHook()
                 return nil
             end
             -- Silent Aim / Magic Bullet
-            if (S.SilentAim.Enabled or S.MagicBullet.Enabled) and method then
-                if method == "FireServer" or method == "InvokeServer" then
+            if (S.SilentAim.Enabled or S.MagicBullet.Enabled) and isShotCall then
+                if isShotCall then
                     local override
+                    hookRecursion = true  -- shield findTarget()'s GetPlayers/IsA calls from re-entering us
                     pcall(function()
-                        local fov = S.SilentAim.Enabled and S.SilentAim.FOV or 1000
-                        local part = S.SilentAim.TargetPart or S.Aimbot.TargetPart or "Head"
-                        local tc = S.SilentAim.TeamCheck
-                        local wc = S.MagicBullet.Enabled and S.MagicBullet.ForceHit and false or S.SilentAim.WallCheck
-                        local t = findTarget(fov, part, tc, wc, false, 0)
+                        local t
+                        if pendingShot then
+                            -- Trigger-based path: target was captured at click time
+                            t = pendingShot
+                            pendingShot = nil  -- one-shot per click
+                        else
+                            -- Standard path: compute target now
+                            local fov = S.SilentAim.Enabled and S.SilentAim.FOV or 1000
+                            local part = S.SilentAim.TargetPart or S.Aimbot.TargetPart or "Head"
+                            local tc = S.SilentAim.TeamCheck
+                            local wc = S.MagicBullet.Enabled and S.MagicBullet.ForceHit and false or S.SilentAim.WallCheck
+                            t = findTarget(fov, part, tc, wc, false, 0)
+                        end
                         if not t or not t.part then return end
                         if S.SilentAim.Enabled and math.random(1, 100) > S.SilentAim.HitChance then return end
                         local hitPos = t.part.Position
@@ -1942,6 +1989,7 @@ local function installNamecallHook()
                         --  since AUTO replaces the first compatible arg.)
                         if camPosOverride then end
                     end)
+                    hookRecursion = false  -- release the guard
                     if override then return table.unpack(override) end
                 end
             end
