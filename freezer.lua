@@ -1896,10 +1896,11 @@ local function installNamecallHook()
             if not S.SilentAim.Enabled then return oldNamecall(self, ...) end
             if typeof(self) ~= "Instance" then return oldNamecall(self, ...) end
 
+            -- Capture varargs OUTSIDE the pcall (nested fn has no '...')
+            local args = table.pack(...)
             Engines._hookRecursion = true
             local override = nil
             pcall(function()
-                local args = table.pack(...)
                 local shot = Engines._pendingShot
                 if not shot or not shot.part then return end
                 -- find first Vector3 or CFrame arg and swap it
@@ -1922,7 +1923,6 @@ local function installNamecallHook()
             Engines._hookRecursion = false
             if override then return table.unpack(override) end
             -- legacy logic below kept for executors that DO have full hook env
-            local args = table.pack(...)
             local method = ""
             pcall(function() method = (getnamecallmethod and getnamecallmethod()) or "" end)
             local isShotCall = (method == "FireServer" or method == "InvokeServer")
